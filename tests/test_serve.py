@@ -343,6 +343,7 @@ def test_boot_load_failure_then_recovery_via_reload(tmp_path):
     # second load() call succeeds, so engines_ready fires once that reload lands,
     # at or before the set_config command's config_applied reply.
     ready_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "engines_ready")
+    assert len(events_of(msgs, "engines_ready")) == 1  # fires at most once
     config_applied_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "config_applied")
     assert ready_idx > reload_start_idx
     assert ready_idx <= config_applied_idx
