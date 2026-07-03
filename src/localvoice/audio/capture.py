@@ -1,5 +1,6 @@
 import math
 import threading
+from typing import Callable
 
 import numpy as np
 
@@ -13,12 +14,18 @@ def rms(audio: np.ndarray) -> float:
 
 
 class GatedBuffer:
-    def __init__(self, max_seconds: float = 300.0, sr: int = 16000) -> None:
+    def __init__(
+        self,
+        max_seconds: float = 300.0,
+        sr: int = 16000,
+        on_level: Callable[[float], None] | None = None,
+    ) -> None:
         self._max_samples = int(max_seconds * sr)
         self._lock = threading.Lock()
         self._armed = False
         self._frames: list[np.ndarray] = []
         self._total = 0
+        self._on_level = on_level
 
     def arm(self) -> None:
         with self._lock:
@@ -42,6 +49,7 @@ class GatedBuffer:
             self._total = 0
 
     def write(self, frames: np.ndarray) -> None:
+        retained = None
         with self._lock:
             if not self._armed or self._total >= self._max_samples:
                 return
@@ -49,11 +57,14 @@ class GatedBuffer:
             chunk = frames[:room]
             self._frames.append(np.asarray(chunk, np.float32))
             self._total += len(chunk)
+            retained = chunk
+        if retained is not None and self._on_level is not None:
+            self._on_level(rms(retained))
 
 
 class MicCapture:
-    def __init__(self, cfg: AudioConfig) -> None:
-        self.buffer = GatedBuffer()
+    def __init__(self, cfg: AudioConfig, on_level: Callable[[float], None] | None = None) -> None:
+        self.buffer = GatedBuffer(on_level=on_level)
         self._cfg = cfg
         self._stream = None
 

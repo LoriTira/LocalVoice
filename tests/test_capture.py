@@ -42,3 +42,16 @@ def test_rms():
     assert rms(np.zeros(100, np.float32)) == 0.0
     assert abs(rms(np.full(100, 0.5, np.float32)) - 0.5) < 1e-6
     assert rms(np.array([], np.float32)) == 0.0
+
+
+def test_on_level_fires_only_while_armed():
+    levels: list[float] = []
+    b = GatedBuffer(on_level=levels.append)
+    b.write(np.full(160, 0.5, np.float32))
+    assert levels == []
+    b.arm()
+    b.write(np.full(160, 0.5, np.float32))
+    assert len(levels) == 1 and abs(levels[0] - 0.5) < 1e-6
+    b.disarm()
+    b.write(np.full(160, 0.5, np.float32))
+    assert len(levels) == 1
