@@ -24,10 +24,9 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
 /// The app's root layout: a `NavigationSplitView` sidebar switching between
 /// the four destinations, a `StatusBanner` above the content, and a footer
-/// reporting connection state + the active language model. Talk and
-/// Settings are fully wired (Tasks 5 and 6 respectively); Models and Setup
-/// are still placeholders here — Task 7 replaces them with the real
-/// models-manager and permissions views.
+/// reporting connection state + the active language model. All four
+/// destinations are fully wired: Talk (Task 5), Settings (Task 6), Models
+/// and Setup (Task 7).
 struct MainWindow: View {
     @Bindable var appState: AppState
     let client: EngineClient
@@ -57,26 +56,12 @@ struct MainWindow: View {
         case .talk:
             TalkView(appState: appState, client: client)
         case .models:
-            placeholder(title: "Models", symbolName: SidebarItem.models.symbolName)
+            ModelsView(appState: appState, client: client)
         case .settings:
             SettingsView(appState: appState, client: client)
         case .setup:
-            placeholder(title: "Setup", symbolName: SidebarItem.setup.symbolName)
+            SetupView(appState: appState, client: client)
         }
-    }
-
-    /// Models/Settings/Setup arrive in Tasks 6/7 — a plain placeholder here
-    /// keeps the sidebar fully navigable now rather than leaving three rows
-    /// that dead-end or crash.
-    private func placeholder(title: String, symbolName: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: symbolName)
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            Text("\(title) is coming soon")
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Footer
