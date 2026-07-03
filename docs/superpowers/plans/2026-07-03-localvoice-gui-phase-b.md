@@ -61,6 +61,9 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources: [Tests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: LocalVoice
 schemes:
