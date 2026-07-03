@@ -79,7 +79,9 @@ def test_barge_in_truncates_and_relistens():
     orch.handle(Event(E.PTT_DOWN))  # barge-in
     assert orch.state is S.LISTENING
     assert ("flush",) in player.log
-    assert transcript.history() and transcript.history()[-1]["role"] == "assistant"
+    last = transcript.history()[-1]
+    assert last["role"] == "assistant"
+    assert last["content"].startswith("Hello there.")  # spoken clause survives truncation
     assert capture.log.count("arm") == 2
 
 
