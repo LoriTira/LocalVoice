@@ -8,3 +8,4 @@ dist/
 localvoice.local.toml
 .claude/
 .superpowers/
+*.local.tmp
