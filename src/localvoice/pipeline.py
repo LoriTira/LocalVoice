@@ -1,4 +1,5 @@
 import threading
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -94,4 +95,5 @@ def run_pipeline(
             emit(Event(EventType.RESPONSE_FINISHED))
     except Exception as exc:  # noqa: BLE001 — pipeline boundary
         if not cancel.is_set():
-            emit(Event(EventType.PIPELINE_ERROR, message=str(exc)))
+            traceback.print_exc()  # the event carries only str(exc); keep the stack visible
+            emit(Event(EventType.PIPELINE_ERROR, message=f"{type(exc).__name__}: {exc}"))

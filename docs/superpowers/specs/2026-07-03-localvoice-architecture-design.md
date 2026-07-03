@@ -9,6 +9,7 @@ Target machine: MacBook Pro M5 Pro, 64 GB unified memory, macOS 26.5.1
 > 2. Cancel sequences run truncate-history BEFORE flush-player — flush clears the spoken-tag accounting (§3, found by review, fixed).
 > 3. LLM prompt caching reworked to token-level prefix reuse: the full conversation is re-templated canonically each turn and only the un-cached suffix is prefilled; caches that cannot trim (hybrid-attention models like Qwen3.6) fall back to full re-prefill. Replaces the original message-list "incremental" policy, which final review found drift-defeated and template-malformed.
 > 4. Deferred from §5/§3 to known limitations: audio-device-change stream restart; the spoken thinking-mode filler (thinking is silent in v1). Measured v1 latency: 0.82 s voice-to-voice (35B-A3B), 1.43 s (27B deep) — see `docs/latency.md`.
+> 5. Per-response pipeline threads replaced by one persistent inference thread owning all MLX imports, loads, and generation (found in live acceptance: MLX streams are only usable on their creating thread — "There is no Stream(gpu, N) in current thread"). Engine access is now serialized by construction; `cmd_run` exits via `os._exit(0)` because worker-thread Metal state can SIGBUS in interpreter teardown.
 
 ## 1. Goal
 

@@ -1,6 +1,7 @@
 import queue
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from localvoice.audio.earcons import EARCONS
 from localvoice.config import KeysConfig
@@ -25,6 +26,7 @@ class Orchestrator:
         tts,
         transcript,
         keys_cfg: KeysConfig,
+        inference: ThreadPoolExecutor | None = None,
         think: bool = False,
         status: Callable[[str], None] = print,
     ) -> None:
@@ -41,7 +43,11 @@ class Orchestrator:
         )
         self._queue: queue.Queue[Event] = queue.Queue()
         self._cancel = threading.Event()
-        self._thread: threading.Thread | None = None
+        # MLX streams are usable only on the thread that created them (mlx-lm builds
+        # its generation stream at import time), so ALL engine imports, loads, and
+        # pipeline runs must share this one persistent inference thread.
+        self._inference = inference or ThreadPoolExecutor(max_workers=1)
+        self._pipeline_future: Future | None = None
         self._gen = 0
         self._running = True
 
@@ -99,10 +105,9 @@ class Orchestrator:
         def emit(event: Event) -> None:
             self.post(Event(event.type, event.held_ms, event.message, gen))
 
-        self._thread = threading.Thread(
-            target=run_pipeline, args=(audio, 16000, self._deps, cancel, emit), daemon=True
+        self._pipeline_future = self._inference.submit(
+            run_pipeline, audio, 16000, self._deps, cancel, emit
         )
-        self._thread.start()
 
     def _show_state(self) -> None:
         labels = {

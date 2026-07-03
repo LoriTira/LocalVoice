@@ -84,14 +84,23 @@ earcon playback, and status printing (`_do()`).
   The mic callback writes frames into a `GatedBuffer` under a lock; the
   player callback pulls samples from a `PlaybackQueue` under a lock. Neither
   callback ever touches the state machine directly.
-- **Pipeline thread** — every response runs on its own daemon thread,
-  spawned by `Orchestrator._start_pipeline()` and running
-  `pipeline.run_pipeline()`. It calls STT once, then streams the LLM through
-  the clause chunker into TTS into the player, checking a `threading.Event`
-  cancellation flag between and inside those calls so a barge-in or `ESC`
-  can stop it mid-stream.
+- **Inference thread** — one persistent single-worker executor owns every
+  MLX operation for the life of the process: engine imports, model loads,
+  and every `pipeline.run_pipeline()` job (`Orchestrator._start_pipeline()`
+  submits to it rather than spawning threads). This is a hard requirement,
+  not a style choice: MLX streams are only usable on the thread that created
+  them, and mlx-lm creates its generation stream at import time — loading on
+  one thread and generating on another crashes with "There is no
+  Stream(gpu, N) in current thread". Colocating everything on one thread
+  also serializes engine access, so a barged-in response's final MLX call
+  simply finishes before the next response's STT begins. Each pipeline job
+  checks a `threading.Event` cancellation flag between and inside its calls
+  so a barge-in or `ESC` can stop it mid-stream. One consequence: MLX Metal
+  state created on this thread can SIGBUS during normal interpreter
+  teardown, so `cmd_run` exits via `os._exit(0)` after releasing OS
+  resources.
 - **Generation counter** — `Orchestrator._gen` increments every time a new
-  pipeline thread is started. Each pipeline's `emit()` closure stamps
+  pipeline job is started. Each pipeline's `emit()` closure stamps
   outgoing events with the generation it was started under
   (`src/localvoice/app.py::_start_pipeline`); `Orchestrator.handle()` drops
   any `FIRST_AUDIO` / `RESPONSE_FINISHED` / `PIPELINE_ERROR` event whose
@@ -168,9 +177,12 @@ An uninterrupted turn instead calls `Transcript.commit()`, which joins
 2. **Thinking mode has no spoken filler.** With `--think`, the assistant is
    silent until reasoning completes and only then begins speaking the reply
    (spec §3 behavior deferred).
-3. **Barge-in engine-level overlap.** After a barge-in, the superseded
-   pipeline thread may complete one final MLX call before it observes
-   cancellation — a bounded, engine-level overlap.
+3. **Barge-in queues behind one final MLX call.** After a barge-in, the
+   superseded pipeline job may complete one final MLX call before it
+   observes cancellation; because all inference shares one thread, the next
+   response's STT waits those few milliseconds. (Replaced the earlier
+   "engine-level overlap" limitation — the single inference thread now
+   serializes engine access by construction.)
 4. **KV prefix-reuse fallback on hybrid-attention models.** On hybrid
    attention models (the Qwen3.6 family) the KV prefix-reuse falls back to a
    full re-prefill each turn because their recurrent-state caches cannot be

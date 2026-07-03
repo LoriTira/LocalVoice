@@ -35,11 +35,11 @@ def make() -> tuple[Orchestrator, FakeCapture, FakePlayer, Transcript]:
 
 
 def drain(orch: Orchestrator) -> None:
-    # process queued events until empty AND pipeline thread (if any) has finished
+    # process queued events until empty AND the pipeline job (if any) has finished
     import time
 
     for _ in range(200):
-        if orch._thread is not None and orch._thread.is_alive():
+        if orch._pipeline_future is not None and not orch._pipeline_future.done():
             time.sleep(0.01)
             continue
         try:

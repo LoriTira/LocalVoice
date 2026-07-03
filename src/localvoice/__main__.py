@@ -42,10 +42,13 @@ def _make_engines(cfg):
     return WhisperMlxEngine(cfg.stt), MlxLmEngine(cfg.llm), KokoroMlxEngine(cfg.tts)
 
 
-def _load_timed(name: str, engine) -> None:
+def _load_timed(name: str, engine, inference=None) -> None:
     t0 = time.perf_counter()
     print(f"loading {name}...", end=" ", flush=True)
-    engine.load()
+    if inference is not None:
+        inference.submit(engine.load).result()  # load on the inference thread
+    else:
+        engine.load()
     print(f"{time.perf_counter() - t0:.1f}s")
 
 
@@ -103,6 +106,12 @@ def cmd_run(args) -> None:
     player = AudioPlayer(cfg.audio, on_response_finished=on_finished)
     capture = MicCapture(cfg.audio)
     transcript = Transcript(cfg.llm.system_prompt)
+    from concurrent.futures import ThreadPoolExecutor
+
+    # One persistent thread owns every MLX import, load, and inference call:
+    # MLX streams (e.g. mlx-lm's import-time generation stream) are only usable
+    # on the thread that created them, so loads and pipelines must colocate.
+    inference = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
     orch = Orchestrator(
         capture=capture,
         player=player,
@@ -111,11 +120,12 @@ def cmd_run(args) -> None:
         tts=tts,
         transcript=transcript,
         keys_cfg=cfg.keys,
+        inference=inference,
         think=args.think or cfg.llm.think,
     )
     orch_ref["orch"] = orch
     for name, engine in (("whisper", stt), ("llm", llm), ("kokoro", tts)):
-        _load_timed(name, engine)
+        _load_timed(name, engine, inference)
     listener = HotkeyListener(cfg.keys, orch.post)
     try:
         capture.start()
@@ -129,6 +139,13 @@ def cmd_run(args) -> None:
         listener.stop()
         capture.stop()
         player.stop()
+        inference.shutdown(wait=False, cancel_futures=True)
+        # MLX Metal state created on the inference thread can SIGBUS during normal
+        # interpreter teardown. Everything above already released OS resources, so
+        # skip teardown entirely rather than crash on exit.
+        import os
+
+        os._exit(0)
 
 
 def _preflight() -> None:
