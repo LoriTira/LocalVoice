@@ -73,7 +73,7 @@ Supporting components:
 - **MicCapture** — opens a 16 kHz mono stream on `PTT_DOWN`, appends frames to a buffer, returns it on `PTT_UP`.
 - **ClauseChunker** — accumulates LLM deltas; emits a chunk at the first clause boundary (`.,;:—?!` or newline) after ~60 chars, hard-flushes at ~200 chars mid-clause and at stream end. Never splits mid-word.
 - **Sanitizer** — strips `<think>…</think>`, markdown syntax, code fences (replaced with "code omitted"), emoji, before text reaches the chunker.
-- **AudioPlayer** — 24 kHz output stream fed by a chunk queue; `flush()` empties queue and silences within one buffer (~20 ms); reports chunks actually played for truncation accounting.
+- **AudioPlayer** — 24 kHz output stream fed by a chunk queue; `flush()` empties queue and silences within one buffer (~20 ms); reports chunks actually played for truncation accounting. Ordering constraint: truncation must read `spoken_tags()` before `flush()` clears the accounting, so every cancel sequence runs truncate-then-flush.
 - **Transcript** — message history; on interruption, the assistant turn is truncated to the text of chunks actually played, so the model knows where it was cut off.
 - **Earcons** — short generated tones on key-down, key-up, and cancel; instant feedback that masks pipeline latency.
 
@@ -88,8 +88,8 @@ States: `IDLE`, `LISTENING`, `RESPONDING` — with `RESPONDING` split internally
 | LISTENING | PTT_UP (<120 ms or silent) | discard | IDLE |
 | LISTENING | ESC | discard recording | IDLE |
 | RESPONDING·processing | first audio chunk | — | RESPONDING·speaking |
-| RESPONDING (either) | PTT_DOWN | cancel pipeline, flush player, truncate history, start mic | LISTENING |
-| RESPONDING (either) | ESC | cancel, flush, truncate | IDLE |
+| RESPONDING (either) | PTT_DOWN | cancel pipeline, truncate history, flush player, start mic | LISTENING |
+| RESPONDING (either) | ESC | cancel, truncate, flush | IDLE |
 | RESPONDING·speaking | PLAYBACK_DONE | append full turn to history | IDLE |
 | any | PIPELINE_ERROR | log, brief console notice | IDLE |
 
