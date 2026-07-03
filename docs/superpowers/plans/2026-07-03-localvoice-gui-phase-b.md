@@ -276,10 +276,12 @@ printf '%s\n' '{"event": "engines_ready"}'
 while IFS= read -r line; do
   case "$line" in
     *shutdown*) printf '%s\n' '{"event": "state", "state": "idle"}'; exit 0 ;;
-    *) printf '%s\n' "{\"event\": \"error\", \"message\": \"echo: $line\"}" ;;
+    *) esc=${line//\\/\\\\}; esc=${esc//\"/\\\"}; printf '%s\n' "{\"event\": \"error\", \"message\": \"echo: $esc\"}" ;;
   esac
 done
 ```
+
+Implementation notes (post-B3): the fixture must JSON-escape the echoed line (quotes/backslashes) or its own send-scenario emits invalid JSON. Also: test runners cannot execute fixtures from TCC-protected folders (e.g. ~/Desktop) without breaking child-stdout pipes - tests stage the fixture into a temp dir; keep #filePath as source of truth.
 
 - [ ] **Step 1: Failing tests** — spawn the fixture via `LaunchMode.custom`, collect events with a bounded async loop (timeout 5 s):
   - startup yields `.spawned`, `.engine(.ready(version: 1, …))`, `.engine(.enginesReady)` in order;
