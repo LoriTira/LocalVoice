@@ -50,6 +50,7 @@ class EngineSet:
         self.stt = EngineProxy(self._factories["stt"](cfg.stt))
         self.llm = EngineProxy(self._factories["llm"](cfg.llm))
         self.tts = EngineProxy(self._factories["tts"](cfg.tts))
+        self.loaded: set[str] = set()
 
     def _cfg_for(self, name: str, cfg: Config):
         return {"stt": cfg.stt, "llm": cfg.llm, "tts": cfg.tts}[name]
@@ -59,10 +60,17 @@ class EngineSet:
         t0 = time.perf_counter()
         engine.load()
         on_progress(name, "done", time.perf_counter() - t0)
+        self.loaded.add(name)
 
-    def load_all(self, on_progress: Callable) -> None:
+    def load_all(self, on_progress: Callable, on_error: Callable | None = None) -> None:
         for name in _ORDER:
-            self._load(name, getattr(self, name)._target, on_progress)
+            try:
+                self._load(name, getattr(self, name)._target, on_progress)
+            except Exception as exc:  # noqa: BLE001 — routed to on_error or re-raised below
+                if on_error is not None:
+                    on_error(name, exc)
+                    continue
+                raise
 
     def reload(self, name: str, cfg: Config, on_progress: Callable) -> None:
         new = self._factories[name](self._cfg_for(name, cfg))

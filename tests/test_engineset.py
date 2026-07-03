@@ -59,3 +59,36 @@ def test_reload_failure_keeps_old_engine():
     with pytest.raises(RuntimeError):
         es.reload("llm", cfg, lambda *a: None)
     assert es.llm._target is old
+
+
+def test_load_all_tracks_loaded_names():
+    cfg, es = make_set()
+    assert es.loaded == set()
+    es.load_all(lambda *a: None)
+    assert es.loaded == {"stt", "llm", "tts"}
+
+
+def test_reload_adds_to_loaded_on_success():
+    cfg, es = make_set()
+    es.load_all(lambda *a: None)
+    es.loaded.discard("llm")
+    es.reload("llm", cfg, lambda *a: None)
+    assert "llm" in es.loaded
+
+
+def test_load_all_without_on_error_still_raises_preserving_old_semantics():
+    cfg, es = make_set(llm_factory=Boom)
+    with pytest.raises(RuntimeError):
+        es.load_all(lambda *a: None)
+
+
+def test_load_all_with_on_error_collects_failure_and_continues_other_engines():
+    cfg, es = make_set(llm_factory=Boom)
+    errors: list = []
+    es.load_all(lambda *a: None, on_error=lambda name, exc: errors.append((name, exc)))
+    assert len(errors) == 1
+    assert errors[0][0] == "llm"
+    assert isinstance(errors[0][1], RuntimeError)
+    assert es.stt.loaded and es.tts.loaded
+    assert not es.llm.loaded
+    assert es.loaded == {"stt", "tts"}

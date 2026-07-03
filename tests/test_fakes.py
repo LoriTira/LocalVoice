@@ -20,3 +20,13 @@ def test_fakes_satisfy_protocols():
     p.mark_end()
     assert p.spoken_tags() == {0}
     assert [entry[0] for entry in p.log] == ["submit", "mark_end"]
+
+
+def test_fake_player_start_stop_log_like_audio_player():
+    """FakePlayer must expose start()/stop() (matching the real AudioPlayer's
+    interface used by Serve._restart_audio) so tests can assert on a
+    restart sequence without touching PortAudio."""
+    p = FakePlayer()
+    p.start()
+    p.stop()
+    assert [entry[0] for entry in p.log] == ["start", "stop"]

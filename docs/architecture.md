@@ -71,7 +71,9 @@ earcon playback, and status printing (`_do()`).
 
 ## Threading model
 
-- **Main thread** — `Orchestrator.run_forever()` blocks on a
+- **Main thread — `run_forever()`** (terminal mode; `localvoice serve` runs
+  this loop on a background thread and owns the main thread for stdin
+  dispatch) — `Orchestrator.run_forever()` blocks on a
   `queue.Queue[Event]`, pulls one event at a time, and runs it through
   `transition()` then `_do()`. This is the only thread that mutates
   `Orchestrator.state`.

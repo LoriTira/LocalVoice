@@ -68,17 +68,38 @@ in addition to `"event"`.
 | event | payload | fires when |
 |---|---|---|
 | `ready` | `version` (int, `1`), `config` (full merged config, nested dict), `schema` (list of descriptors, see below) | once, at serve startup |
-| `state` | `state`: `"idle"` \| `"listening"` \| `"processing"` \| `"speaking"` | every orchestrator state transition |
+| `state` | `state`: `"idle"` \| `"listening"` \| `"processing"` \| `"speaking"` | every orchestrator state transition (see note below — level-triggered, not edge-triggered) |
 | `user_text` | `text` | STT finishes transcribing a turn |
 | `assistant_clause` | `text` | each sentence-ish clause the LLM produces, as it's chunked for TTS |
 | `reasoning` | `text` | thinking-mode silent reasoning content (never spoken) |
-| `turn_done` | `latency`: `{stt, ttft, first_clause, tts_first, total}`, all floats in seconds | once per successful turn, right after the first audio is queued to the player |
+| `turn_done` | `latency`: `{stt, ttft, first_clause, tts_first, total}`, all floats in seconds | once per successful turn, when generation and synthesis of the *whole* reply completes — not at first audio. Every value in `latency` is a duration frozen at or before first-audio (see the definitions below), but the event itself is emitted only after the LLM stream and clause synthesis loop finish (`pipeline.py::run_pipeline`, right after `player.mark_end()`). On a long answer, `turn_done` can arrive noticeably later than the moment the user actually started hearing the reply. |
 | `level` | `rms` (float, 4 decimals) | mic input level, throttled to ≤20 Hz, only while the capture buffer is armed (state `listening`) |
 | `load_progress` | `engine`: `"stt"` \| `"llm"` \| `"tts"`, `phase`: `"start"` \| `"done"`, `seconds` (float, only on `"done"`; `null` on `"start"`) | initial load and every hot-apply reload |
 | `download_progress` | `repo`, `pct` (float 0-100 or `null` if size unknown), `done` (bool) | reply stream to `download_model` |
 | `models` | `installed`: list of `{"id", "path", "size_gb", "kind"}` | reply to `list_models` |
 | `config_applied` | `config` (full merged config, post-apply), `reloaded`: list of engine names that were reloaded | reply to `set_config` |
 | `error` | `message` | any recoverable failure — bad command, bad config value, engine load/reload failure, audio unavailable, inject-audio misuse |
+
+`turn_done.latency` keys, all seconds, all measured against pipeline-internal
+timestamps captured in `pipeline.py::run_pipeline`:
+
+- **`stt`** — transcribe duration: STT start to STT finish.
+- **`ttft`** ("time to first token") — STT-done to the first LLM stream delta.
+- **`first_clause`** — first LLM delta to the first speakable clause (i.e.
+  the first chunk `ClauseChunker` emits that survives markup-stripping).
+- **`tts_first`** — first speakable clause to the first audio chunk actually
+  submitted to the player.
+- **`total`** — turn start (capture released) to that same first-audio-submit
+  moment.
+
+**`state` is level-triggered, not edge-triggered.** The orchestrator emits
+`state` from `_show_state()` on every `handle()` call, including
+transitions whose `(state, event)` pair is a no-op in the transition table
+(same state in, same state out — see `docs/architecture.md`'s state
+table). A client should treat repeated `state` events carrying the same
+`state` value as idempotent — safe to re-render, never a signal that
+something changed — rather than assuming every `state` message represents
+a genuine transition.
 
 Example — `ready` (config/schema truncated for brevity; every `Config`
 field and its schema descriptor is present in the real message):
@@ -257,7 +278,8 @@ applies the change to the running process per this table (spec §5):
 
 | Fields | Action | Reflected in `config_applied` |
 |---|---|---|
-| `tts.voice`, `tts.speed`, `llm.think`, `llm.max_tokens`, `llm.context_tokens`, `llm.system_prompt`, `keys.debounce_ms` | Applied immediately on the live config object. No reload, no audio restart. A turn already in flight keeps its captured values — instant changes take effect at the next turn boundary. | `reloaded: []` |
+| `llm.think`, `llm.max_tokens`, `llm.context_tokens`, `llm.system_prompt`, `keys.debounce_ms` | Applied immediately on the live config object. No reload, no audio restart. A turn already in flight keeps its captured values — `llm.stream()` reads these once per turn, so an instant change here takes effect starting the *next turn*, not the one in progress. | `reloaded: []` |
+| `tts.voice`, `tts.speed` | Applied immediately on the live config object. No reload, no audio restart. Unlike the `llm.*` fields above, `TTSEngine.synthesize()` reads `voice`/`speed` fresh on every call, and the pipeline calls `synthesize()` once per clause — so a change here can take effect mid-turn, at the *next clause* of a response already in flight, not just the next turn. | `reloaded: []` |
 | `llm.model`, `llm.deep_model`, `stt.model`, `tts.model`, any `*.engine` | The named engine (`stt`/`llm`/`tts`) is reloaded on the single inference thread — same thread every load and pipeline run uses — emitting `load_progress(start)`/`load_progress(done)`. Conversation history is untouched; a turn already in flight keeps running on the old engine instance until it finishes (reloads queue behind it on the same thread). | `reloaded: ["llm"]` (etc., in `stt, llm, tts` order, deduped) |
 | `audio.input_device`, `audio.output_device`, `audio.rebuffer_ms` | Player and capture streams are stopped and restarted. | `reloaded: []`, but the restart itself can emit `error` if the new device is unavailable |
 | `keys.ptt`, `keys.stop` | Stored on the live config for terminal-mode (`localvoice run`) use; **the GUI owns the actual key tap in Swift** and applies these client-side. `serve` does not install any hotkey listener. | `reloaded: []` |

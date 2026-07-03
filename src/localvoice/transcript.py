@@ -10,6 +10,9 @@ class Transcript:
         self._pending_user: str | None = None
         self._pending_clauses: list[str] = []
 
+    def set_system_prompt(self, text: str) -> None:
+        self._system = text
+
     def begin_turn(self, user_text: str) -> None:
         self._pending_user = user_text
         self._pending_clauses = []

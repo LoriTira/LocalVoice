@@ -5,7 +5,14 @@ from pathlib import Path
 
 
 def dir_bytes(path: Path) -> int:
-    return sum(p.stat().st_size for p in Path(path).rglob("*") if p.is_file())
+    total = 0
+    for p in Path(path).rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue  # racing writer (e.g. a download) deleted/replaced p; skip it
+    return total
 
 
 def download_pct(local_bytes: int, total_bytes: int | None) -> float | None:
@@ -79,8 +86,11 @@ def download(
 
         repo_dir = Path(HF_HUB_CACHE) / ("models--" + repo.replace("/", "--"))
         while not stop.is_set():
-            if repo_dir.exists():
-                on_pct(download_pct(dir_bytes(repo_dir), total))
+            try:
+                if repo_dir.exists():
+                    on_pct(download_pct(dir_bytes(repo_dir), total))
+            except OSError:
+                pass  # racing writer mid-tick; skip this tick, try again next poll
             time.sleep(poll_s)
 
     t = threading.Thread(target=poller, daemon=True)

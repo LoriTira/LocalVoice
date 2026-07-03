@@ -45,7 +45,7 @@ Engine → app events:
 
 | event | payload | source |
 |---|---|---|
-| `ready` | `version`, merged `config`, `schema` (§4), engine paths | serve startup |
+| `ready` | `version`, merged `config`, `schema` (§4), engine paths | serve startup (implemented payload: version, config, schema — engine paths come from `list_models`) |
 | `state` | `idle \| listening \| processing \| speaking` | orchestrator `_show_state` replacement |
 | `user_text` | `text` | pipeline `on_user_text` |
 | `assistant_clause` | `text` | pipeline `on_assistant_clause` |

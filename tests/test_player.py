@@ -139,6 +139,21 @@ def test_pull_or_none_reports_idle_and_gated():
     assert block is not None and block.any()
 
 
+def test_set_rebuffer_rearms_gate_live():
+    """set_rebuffer must re-arm gating on a live queue: a queue built with
+    gating disabled (rebuffer=0) that later gets set_rebuffer(300) should
+    gate a below-threshold submit exactly as if it had been constructed
+    with rebuffer=300 -- proving the setter, not just the constructor,
+    controls the threshold used by _fill_locked."""
+    q = make([], rebuffer=0)  # gate-disabled at construction
+    q.set_rebuffer(300)
+    q.submit(np.ones(100, np.float32), tag=0)  # below the newly-set 300 threshold
+    assert not q.pull(50).any()  # gated: proves set_rebuffer took effect live
+    assert q.spoken_tags() == set()
+    q.mark_end()
+    assert q.pull(50).any()  # short final answer still plays via mark_end
+
+
 def test_pull_or_none_fires_drain_once():
     fired: list = []
     q = make(fired)

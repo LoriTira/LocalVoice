@@ -26,6 +26,10 @@ class PlaybackQueue:
         self._ended = False
         self._fired = False
 
+    def set_rebuffer(self, samples: int) -> None:
+        with self._lock:
+            self._rebuffer = samples
+
     def submit(self, samples: np.ndarray, tag: int) -> None:
         with self._lock:
             self._chunks.append((np.asarray(samples, np.float32), _RESPONSE, tag))
@@ -118,6 +122,7 @@ class AudioPlayer:
     def start(self) -> None:
         import sounddevice as sd
 
+        self.queue.set_rebuffer(int(24000 * self._cfg.rebuffer_ms / 1000))
         device = self._cfg.output_device or None
         # Write-mode stream with a deep device-side buffer instead of a Python
         # callback: MLX holds the GIL in bursts up to ~300 ms (prefill/encode), so a

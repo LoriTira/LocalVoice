@@ -75,7 +75,38 @@ class InstantExecutor:
         pass
 
 
-def build(tmp_path: Path, commands: list[dict], capture=None) -> list[dict]:
+class ManualExecutor:
+    """Test double for the inference ThreadPoolExecutor that defers work until
+    explicitly told to run it, so a test can observe state BEFORE a submitted
+    job (e.g. the boot _load_engines job) has executed."""
+
+    def __init__(self):
+        self._pending: list[tuple] = []
+
+    def submit(self, fn, *a, **k):
+        self._pending.append((fn, a, k))
+
+        class F:
+            def done(self):
+                return False
+
+            def result(self):
+                return None
+
+        return F()
+
+    def run_all(self) -> None:
+        pending, self._pending = self._pending, []
+        for fn, a, k in pending:
+            fn(*a, **k)
+
+    def shutdown(self, **k):
+        pass
+
+
+def build(
+    tmp_path: Path, commands: list[dict], capture=None, raw_lines: list[str] | None = None
+) -> list[dict]:
     cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
@@ -85,7 +116,10 @@ def build(tmp_path: Path, commands: list[dict], capture=None) -> list[dict]:
         "tts": lambda c: FakeTTS(),
     }
     es = EngineSet(cfg, factories=factories)
-    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    payload = "".join(json.dumps(c) + "\n" for c in commands)
+    if raw_lines:
+        payload += "".join(line + "\n" for line in raw_lines)
+    stdin = io.StringIO(payload)
     stdout = io.StringIO()
     s = Serve(
         config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
@@ -187,3 +221,296 @@ def test_inject_audio_waits_for_arm_before_writing(tmp_path):
         capture=GatedFakeCapture(),
     )
     assert events_of(msgs, "user_text")
+
+
+def test_ptt_up_none_held_ms_does_not_kill_the_loop(tmp_path):
+    """Regression guard for the phase-A review dispatch-boundary finding:
+    ptt_up with held_ms=None (a GUI client sending JSON null) must not raise
+    inside int(msg.get("held_ms", 500)) — int(None) is a TypeError, and
+    without a dispatch exception boundary that would kill the whole stdin
+    loop, silently dropping every subsequent command. Either an error event
+    or a handled turn is acceptable for this one message; what's asserted is
+    that the loop survived to process a later list_models command."""
+    msgs = build(
+        tmp_path,
+        [
+            {"cmd": "ptt_down"},
+            {"cmd": "ptt_up", "held_ms": None},
+            {"cmd": "list_models"},
+            {"cmd": "shutdown"},
+        ],
+    )
+    assert events_of(msgs, "models"), "serve must survive ptt_up held_ms=None to reach list_models"
+
+
+def test_set_config_system_prompt_hot_applies_to_next_turn(tmp_path):
+    """llm.system_prompt is in the "instant" hot-apply group (docs/gui.md):
+    a set_config call must update the live Transcript's system message so
+    the very next turn's first LLM call already carries the new prompt —
+    not just the Serve-level Config object, which the pipeline never reads
+    directly."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    fake_llm = FakeLLM(["Hi from the fake. ", "More words."])
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: fake_llm,
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [
+        {"cmd": "set_config", "changes": {"llm.system_prompt": "You are a pirate."}},
+        {"cmd": "ptt_down"},
+        {"cmd": "ptt_up", "held_ms": 500},
+        {"cmd": "shutdown"},
+    ]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    assert fake_llm.last_messages[0] == {"role": "system", "content": "You are a pirate."}
+
+
+def test_boot_load_failure_then_recovery_via_reload(tmp_path):
+    """Regression guard for the phase-A review boot-load-recovery finding:
+    if one engine fails to load at boot, serve must NOT emit engines_ready
+    (the old all-or-nothing _load_engines either emitted engines_ready for
+    a fully-loaded set or silently emitted nothing useful past one error),
+    and a client that fixes the config (set_config llm.model -> reload)
+    must be able to complete the boot via the normal reload path, with
+    engines_ready firing once the recovered engine finishes loading."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+
+    load_calls = {"n": 0}
+
+    class FlakyLLM(FakeLLM):
+        def load(self) -> None:
+            load_calls["n"] += 1
+            if load_calls["n"] == 1:
+                raise RuntimeError("model path not found")
+
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FlakyLLM(["Hi from the fake. ", "More words."]),
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [
+        {"cmd": "set_config", "changes": {"llm.model": "other/model"}},
+        {"cmd": "ptt_down"},
+        {"cmd": "ptt_up", "held_ms": 500},
+        {"cmd": "shutdown"},
+    ]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    msgs = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    # Startup happens synchronously before any command is read (InstantExecutor
+    # runs _load_engines inline inside run()); the llm's first load() call raised.
+    # The SECOND load_progress(engine=llm, phase=start) is the reload triggered by
+    # set_config -- the boundary between "pure startup" and "processing that command".
+    def _is_llm_start(m: dict) -> bool:
+        return (
+            m.get("event") == "load_progress"
+            and m.get("engine") == "llm"
+            and m.get("phase") == "start"
+        )
+
+    llm_start_indices = [i for i, m in enumerate(msgs) if _is_llm_start(m)]
+    assert len(llm_start_indices) == 2, "expected one load_progress(start) per llm load() call"
+    reload_start_idx = llm_start_indices[1]
+    startup_msgs = msgs[:reload_start_idx]
+    assert not events_of(startup_msgs, "engines_ready")
+    assert any("llm" in m["message"] for m in events_of(startup_msgs, "error"))
+    # The reload (triggered by set_config llm.model) completes the boot: llm's
+    # second load() call succeeds, so engines_ready fires once that reload lands,
+    # at or before the set_config command's config_applied reply.
+    ready_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "engines_ready")
+    config_applied_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "config_applied")
+    assert ready_idx > reload_start_idx
+    assert ready_idx <= config_applied_idx
+    assert load_calls["n"] == 2
+    # And the pipeline is now fully usable.
+    assert events_of(msgs, "user_text")
+
+
+def test_preview_voice_restores_original_voice_and_reaches_player(tmp_path):
+    """preview_voice must synthesize through the real player and restore the
+    configured voice afterward, in the ordinary (non-concurrent) case."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    original_voice = cfg.tts.voice
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["hi"]),
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    player = FakePlayer()
+    commands = [{"cmd": "preview_voice", "voice": "af_bella"}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=player, capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    assert any(entry[0] == "submit_raw" for entry in player.log)
+    assert s._cfg.tts.voice == original_voice
+
+
+def test_preview_voice_cas_restore_does_not_clobber_concurrent_set_config(tmp_path):
+    """Regression guard for the phase-A review preview-restore race: if a
+    set_config changes tts.voice WHILE a preview job is mid-synthesis, the
+    preview's finally block must not blindly stomp that concurrent change
+    back to the pre-preview voice. Compare-and-swap semantics: only restore
+    if the live voice is still what preview itself set."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+
+    class MutatingTTS:
+        def __init__(self, serve_holder):
+            self._serve_holder = serve_holder
+
+        def load(self) -> None:
+            pass
+
+        def synthesize(self, text: str):
+            import numpy as np
+
+            yield np.full(10, 0.1, np.float32)
+            # Simulate a concurrent set_config landing mid-synthesis, on the same
+            # single inference thread (a reload or another preview could not
+            # interleave here in production, but a set_config's instant-path
+            # write to self._cfg.tts.voice happens on the stdin-loop thread and
+            # is not otherwise synchronized with this job).
+            self._serve_holder["serve"]._cfg.tts.voice = "af_other"
+            yield np.full(10, 0.1, np.float32)
+
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["hi"]),
+        "tts": lambda c: MutatingTTS(holder),
+    }
+    holder: dict = {}
+    es = EngineSet(cfg, factories=factories)
+    commands = [{"cmd": "preview_voice", "voice": "af_bella"}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    holder["serve"] = s
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    assert s._cfg.tts.voice == "af_other"
+
+
+def test_ptt_down_before_engines_ready_yields_error(tmp_path):
+    """Backfill regression guard: a client that races the boot sequence (sends
+    ptt_down before the boot load job has even run, e.g. immediately after
+    the process starts) must get the standard "engines still loading" error,
+    never a crash or a silently-dropped command. Using ManualExecutor to
+    defer the load job proves this holds even in the window before
+    _load_engines has been executed at all -- not just while it's running."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["hi"]),
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    manual = ManualExecutor()
+    commands = [{"cmd": "ptt_down"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=manual,
+    )
+    s._exit = lambda code: None
+    s.run()  # returns at stdin EOF; ptt_down was dispatched before the load job ran
+    msgs = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert any("engines still loading" in m["message"] for m in events_of(msgs, "error"))
+    assert not s._engines_ready
+    # The deferred load job can still be run to completion cleanly afterward.
+    manual.run_all()
+    assert s._engines_ready
+
+
+def test_restart_audio_stops_then_starts_the_player(tmp_path):
+    """Backfill regression guard: set_config on an audio.* field (restart_audio
+    group) must actually stop() then start() the player -- proving the hot-apply
+    restart path (which now also re-arms PlaybackQueue's rebuffer gate via
+    AudioPlayer.start(), item 4) really runs, not just that config_applied
+    fires."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["hi"]),
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    player = FakePlayer()
+    commands = [
+        {"cmd": "set_config", "changes": {"audio.rebuffer_ms": 400}},
+        {"cmd": "shutdown"},
+    ]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=player, capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    kinds = [entry[0] for entry in player.log]
+    # run() calls player.start() once at boot and _shutdown() calls player.stop()
+    # once at the end; _restart_audio's own stop()/start() pair sits between them.
+    assert kinds == ["start", "stop", "start", "stop"], kinds
+
+
+def test_dispatch_exception_boundary_survives_bad_message_shape(tmp_path):
+    """A raw JSON line that decodes but isn't a dict (e.g. a bare list) must
+    not kill the stdin loop: serve should emit an error naming the bad
+    message and keep reading, ultimately handling shutdown cleanly."""
+    msgs = build(tmp_path, [], raw_lines=["[1]", json.dumps({"cmd": "shutdown"})])
+    errors = events_of(msgs, "error")
+    assert any("bad message" in m["message"] for m in errors)
+    # serve survived to process shutdown: shutdown() calls os._exit, which we've
+    # stubbed to a no-op in build(), so the presence of the "ready" event plus no
+    # hang is the practical proxy — assert the run() call returned at all by
+    # checking we got output beyond just "ready".
+    assert len(msgs) >= 2

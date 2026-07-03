@@ -100,17 +100,22 @@ class Serve:
             self._real_stdout.write(json.dumps(obj) + "\n")
             self._real_stdout.flush()
 
+    def _on_load_error(self, name: str, exc: Exception) -> None:
+        self.emit({"event": "error", "message": f"{name} load failed: {exc}"})
+
     def _load_engines(self) -> None:
-        try:
-            self._engines.load_all(
-                lambda n, p, s: self.emit(
-                    {"event": "load_progress", "engine": n, "phase": p, "seconds": s}
-                )
-            )
+        self._engines.load_all(
+            lambda n, p, s: self.emit(
+                {"event": "load_progress", "engine": n, "phase": p, "seconds": s}
+            ),
+            on_error=self._on_load_error,
+        )
+        self._maybe_engines_ready()
+
+    def _maybe_engines_ready(self) -> None:
+        if not self._engines_ready and self._engines.loaded == {"stt", "llm", "tts"}:
             self._engines_ready = True
             self.emit({"event": "engines_ready"})
-        except Exception as exc:  # noqa: BLE001 — surfaced to the GUI
-            self.emit({"event": "error", "message": f"engine load failed: {exc}"})
 
     def run(self) -> None:
         if self._real_stdout is sys.stdout:  # process mode: protect the protocol
@@ -131,6 +136,7 @@ class Serve:
         self._inference.submit(self._load_engines)
         self._loop = threading.Thread(target=self._orch.run_forever, daemon=True)
         self._loop.start()
+        shutdown_requested = False
         for line in self._stdin:
             line = line.strip()
             if not line:
@@ -140,8 +146,19 @@ class Serve:
             except json.JSONDecodeError:
                 self.emit({"event": "error", "message": f"bad json: {line[:80]}"})
                 continue
-            if self._dispatch(msg):
-                break
+            if not isinstance(msg, dict):
+                self.emit({"event": "error", "message": f"bad message: {line[:80]}"})
+                continue
+            try:
+                if self._dispatch(msg):
+                    shutdown_requested = True
+                    break
+            except Exception as exc:  # noqa: BLE001 — protocol boundary: a command must never kill serve
+                self.emit({"event": "error", "message": f"{type(exc).__name__}: {exc}"})
+        if not shutdown_requested:
+            # stdin EOF with no explicit shutdown means the GUI process died (pipe
+            # closed): release the mic/player and exit rather than hang forever.
+            self._shutdown()
 
     def _require_ready(self) -> bool:
         if not self._engines_ready:
@@ -156,7 +173,8 @@ class Serve:
                 self._orch.post(Event(EventType.PTT_DOWN))
         elif cmd == "ptt_up":
             if self._require_ready():
-                self._orch.post(Event(EventType.PTT_UP, held_ms=int(msg.get("held_ms", 500))))
+                held_ms = int(msg.get("held_ms") or 500)
+                self._orch.post(Event(EventType.PTT_UP, held_ms=held_ms))
         elif cmd == "esc":
             self._orch.post(Event(EventType.ESC))
         elif cmd == "set_config":
@@ -192,6 +210,8 @@ class Serve:
             setattr(getattr(self._cfg, section), name, getattr(getattr(new_cfg, section), name))
         if "llm.think" in changes:
             self._orch._deps.think = self._cfg.llm.think
+        if "llm.system_prompt" in changes:
+            self._orch._transcript.set_system_prompt(self._cfg.llm.system_prompt)
         for name in plan["reload"]:
             self._sync_section(name, new_cfg)
             self._inference.submit(self._reload_engine, name)
@@ -224,6 +244,8 @@ class Serve:
             )
         except Exception as exc:  # noqa: BLE001
             self.emit({"event": "error", "message": f"reload {name} failed: {exc}"})
+            return
+        self._maybe_engines_ready()
 
     def _restart_audio(self) -> None:
         for dev in (self._player, self._capture):
@@ -265,7 +287,11 @@ class Serve:
             except Exception as exc:  # noqa: BLE001
                 self.emit({"event": "error", "message": f"preview failed: {exc}"})
             finally:
-                self._cfg.tts.voice = old
+                # Compare-and-swap: only restore if nothing else (a concurrent
+                # set_config) changed the voice while we were synthesizing —
+                # otherwise we'd clobber that newer, intentional change.
+                if self._cfg.tts.voice == voice:
+                    self._cfg.tts.voice = old
 
         self._inference.submit(job)
 

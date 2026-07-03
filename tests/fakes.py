@@ -55,6 +55,12 @@ class FakePlayer:
         self.log: list[tuple] = []
         self._tags: set[int] = set()
 
+    def start(self) -> None:
+        self.log.append(("start",))
+
+    def stop(self) -> None:
+        self.log.append(("stop",))
+
     def submit(self, samples: np.ndarray, tag: int) -> None:
         self.log.append(("submit", tag, len(samples)))
         self._tags.add(tag)
