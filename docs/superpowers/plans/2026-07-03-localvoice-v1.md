@@ -2632,6 +2632,10 @@ def cmd_run(args) -> None:
     orch_ref = {}
 
     def on_finished():
+        # Fire-time gen read: a drain callback stalled across a full barge-in +
+        # re-release (microsecond window stretched over >300ms of human action)
+        # could stamp the new generation. Judged unreachable in practice; if it
+        # ever bites, plumb mark_end(gen) through PlaybackQueue instead.
         orch = orch_ref.get("orch")
         if orch is not None:
             orch.post(Event(EventType.RESPONSE_FINISHED, gen=orch._gen))
@@ -2646,12 +2650,12 @@ def cmd_run(args) -> None:
     orch_ref["orch"] = orch
     for name, engine in (("whisper", stt), ("llm", llm), ("kokoro", tts)):
         _load_timed(name, engine)
-    capture.start()
-    player.start()
     listener = HotkeyListener(cfg.keys, orch.post)
-    listener.start()
-    print("ready - hold right-command and talk; esc stops; ctrl-c quits")
     try:
+        capture.start()
+        player.start()
+        listener.start()
+        print("ready - hold right-command and talk; esc stops; ctrl-c quits")
         orch.run_forever()
     except KeyboardInterrupt:
         pass
@@ -2791,6 +2795,8 @@ def run_bench(cfg: Config, runs: int = 3) -> None:
         if first_clause is None:
             first_clause = chunker.flush() or "Hello."
             t_first_clause = time.perf_counter()
+        if t_first_token is None:  # degenerate zero-delta stream
+            t_first_token = t_first_clause
         next(iter(tts.synthesize(first_clause)))
         t_tts = time.perf_counter()
         rows.append((t_stt - t0, t_first_token - t_stt, t_first_clause - t_first_token, t_tts - t_first_clause, t_tts - t0))
