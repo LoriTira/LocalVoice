@@ -20,6 +20,8 @@ class LlmConfig:
     deep_model: str = ""
     think: bool = False
     max_tokens: int = 1024
+    think_tokens: int = 3072  # extra generation budget for silent reasoning
+    context_tokens: int = 8192
     system_prompt: str = (
         "You are a helpful voice assistant. Keep answers short and spoken-friendly."
     )
@@ -44,6 +46,7 @@ class KeysConfig:
 class AudioConfig:
     input_device: str = ""
     output_device: str = ""
+    rebuffer_ms: int = 300
 
 
 @dataclass

@@ -46,3 +46,28 @@ def test_plain_text_passes_through_unchanged():
 )
 def test_strip_speech_markup(raw, clean):
     assert strip_speech_markup(raw) == clean
+
+
+def test_on_think_collects_across_split_deltas():
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    out = "".join(f.feed(d) for d in ["<th", "ink>step one ", "and two</thi", "nk>Answer."])
+    out += f.finish()
+    assert out == "Answer."
+    assert got == ["step one and two"]
+
+
+def test_on_think_not_called_without_think_block():
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    f.feed("plain text only")
+    f.finish()
+    assert got == []
+
+
+def test_on_think_delivers_unclosed_think_at_finish():
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    f.feed("<think>partial reasoning that never closes")
+    assert f.finish() == ""
+    assert got == ["partial reasoning that never closes"]

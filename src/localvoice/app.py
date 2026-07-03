@@ -40,6 +40,7 @@ class Orchestrator:
             stt=stt, llm=llm, tts=tts, player=player, transcript=transcript, think=think,
             on_user_text=lambda t: status(f"you: {t}"),
             on_assistant_clause=lambda t: status(f"assistant: {t}"),
+            on_thinking=lambda t: status(f"reasoning: {t[:600]}{'...' if len(t) > 600 else ''}"),
         )
         self._queue: queue.Queue[Event] = queue.Queue()
         self._cancel = threading.Event()

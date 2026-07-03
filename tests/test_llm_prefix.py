@@ -16,3 +16,45 @@ def test_divergence_at_zero():
 
 def test_both_empty():
     assert common_prefix_len([], []) == 0
+
+
+def count_chars(msgs):
+    return sum(len(m["content"]) for m in msgs)
+
+
+def test_fit_messages_noop_under_budget():
+    from localvoice.llm.mlx_lm_engine import fit_messages
+
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]
+    assert fit_messages(msgs, 100, count_chars) == msgs
+
+
+def test_fit_messages_drops_oldest_pair_first():
+    from localvoice.llm.mlx_lm_engine import fit_messages
+
+    msgs = [
+        {"role": "system", "content": "ss"},
+        {"role": "user", "content": "aaaa"},
+        {"role": "assistant", "content": "bbbb"},
+        {"role": "user", "content": "cccc"},
+        {"role": "assistant", "content": "dddd"},
+        {"role": "user", "content": "ee"},
+    ]
+    out = fit_messages(msgs, 12, count_chars)
+    assert out == [
+        {"role": "system", "content": "ss"},
+        {"role": "user", "content": "cccc"},
+        {"role": "assistant", "content": "dddd"},
+        {"role": "user", "content": "ee"},
+    ]
+
+
+def test_fit_messages_never_drops_system_or_live_user():
+    from localvoice.llm.mlx_lm_engine import fit_messages
+
+    msgs = [
+        {"role": "system", "content": "x" * 50},
+        {"role": "user", "content": "y" * 50},
+    ]
+    out = fit_messages(msgs, 10, count_chars)  # over budget but nothing droppable
+    assert out == msgs

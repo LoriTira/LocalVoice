@@ -12,6 +12,24 @@ def common_prefix_len(a: list[int], b: list[int]) -> int:
     return n
 
 
+def fit_messages(messages: list[Message], budget: int, count) -> list[Message]:
+    """Drop the OLDEST user/assistant exchange (never the system prompt, never
+    the final user message) until count(messages) fits the token budget."""
+    msgs = list(messages)
+    while count(msgs) > budget:
+        drop = next(
+            (i for i, m in enumerate(msgs[:-1]) if m.get("role") != "system"),
+            None,
+        )
+        if drop is None:
+            break  # only system + the live user turn left: nothing droppable
+        end = drop + 1
+        if end < len(msgs) - 1 and msgs[end].get("role") == "assistant":
+            end += 1  # drop the paired assistant reply with its user turn
+        del msgs[drop:end]
+    return msgs
+
+
 class MlxLmEngine:
     def __init__(self, cfg: LlmConfig) -> None:
         self._cfg = cfg
@@ -48,7 +66,11 @@ class MlxLmEngine:
         from mlx_lm import stream_generate
 
         # Canonical full-conversation template every turn — no incremental
-        # templating, so the token stream is always well-formed.
+        # templating, so the token stream is always well-formed. Oldest turns
+        # are dropped first when the prompt exceeds the context budget.
+        messages = fit_messages(
+            messages, self._cfg.context_tokens, lambda m: len(self._template(m, think))
+        )
         tokens = self._template(messages, think)
 
         # Read how many tokens the cache actually holds (prompt + generated).
@@ -82,11 +104,19 @@ class MlxLmEngine:
             common = 0
 
         self._prompt_tokens = list(tokens)
+        if think and self._tokenizer.decode(tokens[-8:]).rstrip().endswith("<think>"):
+            # Qwen thinking templates END with an open <think>, so the stream
+            # contains reasoning with no opening tag. Prepend one synthetically
+            # so the downstream TextFilter suppresses (and captures) it. Guarded
+            # on the actual prompt tail so templates that ignore enable_thinking
+            # never get their whole answer swallowed.
+            yield "<think>"
+        budget = self._cfg.max_tokens + (self._cfg.think_tokens if think else 0)
         for response in stream_generate(
             self._model,
             self._tokenizer,
             suffix,
-            max_tokens=self._cfg.max_tokens,
+            max_tokens=budget,
             prompt_cache=cache,
         ):
             yield response.text

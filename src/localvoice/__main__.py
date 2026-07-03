@@ -8,12 +8,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="localvoice", description="Local push-to-talk voice assistant"
     )
     sub = parser.add_subparsers(dest="command")
-    parser.set_defaults(command="run", config="localvoice.toml", deep=False, think=False)
+    parser.set_defaults(
+        command="run", config="localvoice.toml", deep=False, think=False, model=None
+    )
 
     run = sub.add_parser("run", help="start the assistant (default)")
     run.add_argument("--config", default="localvoice.toml")
     run.add_argument("--deep", action="store_true", help="use [llm].deep_model")
     run.add_argument("--think", action="store_true", help="enable silent reasoning mode")
+    run.add_argument("--model", default=None, help="override [llm].model (HF repo id or path)")
 
     setup = sub.add_parser("setup", help="download configured models")
     setup.add_argument("--config", default="localvoice.toml")
@@ -21,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     bench = sub.add_parser("bench", help="measure per-stage latency")
     bench.add_argument("--config", default="localvoice.toml")
     bench.add_argument("--deep", action="store_true")
+    bench.add_argument("--model", default=None, help="override [llm].model (HF repo id or path)")
     bench.add_argument("--runs", type=int, default=3)
     return parser
 
@@ -29,9 +33,12 @@ def _load_config(args):
     from localvoice.config import ConfigError, load_config
 
     try:
-        return load_config(Path(args.config), deep=getattr(args, "deep", False))
+        cfg = load_config(Path(args.config), deep=getattr(args, "deep", False))
     except ConfigError as exc:
         raise SystemExit(f"config error: {exc}") from exc
+    if getattr(args, "model", None):
+        cfg.llm.model = args.model  # explicit CLI override beats config and --deep
+    return cfg
 
 
 def _make_engines(cfg):
@@ -73,8 +80,23 @@ def _missing_models(cfg) -> list[tuple[str, str]]:
     return missing
 
 
+def _defuse_tqdm_mp_lock() -> None:
+    """mlx-whisper's progress bar makes tqdm allocate a global multiprocessing
+    RLock; because cmd_run exits via os._exit, the resource tracker reports that
+    semaphore as leaked on every exit. We never fork, so pre-setting mp_lock=None
+    (a state tqdm itself uses when the lock can't be created) skips it entirely."""
+    try:
+        from tqdm import std as tqdm_std
+
+        if not hasattr(tqdm_std.TqdmDefaultWriteLock, "mp_lock"):
+            tqdm_std.TqdmDefaultWriteLock.mp_lock = None
+    except Exception:  # noqa: BLE001 — cosmetic-only guard; never block startup
+        pass
+
+
 def cmd_run(args) -> None:
     cfg = _load_config(args)
+    _defuse_tqdm_mp_lock()
     _preflight()
     missing = _missing_models(cfg)
     if missing:

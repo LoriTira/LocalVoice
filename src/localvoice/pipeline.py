@@ -28,6 +28,7 @@ class PipelineDeps:
     min_seconds: float = 0.25
     on_user_text: Callable[[str], None] = field(default=lambda s: None)
     on_assistant_clause: Callable[[str], None] = field(default=lambda s: None)
+    on_thinking: Callable[[str], None] = field(default=lambda s: None)
 
 
 def run_pipeline(
@@ -53,7 +54,7 @@ def run_pipeline(
         deps.transcript.begin_turn(user_text)
         deps.on_user_text(user_text)
 
-        text_filter = TextFilter()
+        text_filter = TextFilter(on_think=deps.on_thinking)
         chunker = ClauseChunker()
         first_audio_sent = False
         spoke_anything = False

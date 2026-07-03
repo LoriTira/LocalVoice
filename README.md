@@ -87,6 +87,8 @@ LocalVoice reads `localvoice.toml` from the current directory by default
 | `[llm]` | `deep_model` | `""` (empty) | HF repo id or local path used with `--deep`; empty disables `--deep` |
 | `[llm]` | `think` | `false` | enable Qwen3.6 silent reasoning by default |
 | `[llm]` | `max_tokens` | `1024` | generation cap per response |
+| `[llm]` | `think_tokens` | `3072` | extra generation budget granted only in thinking mode |
+| `[llm]` | `context_tokens` | `8192` | prompt-token budget; oldest exchanges are dropped first when history exceeds it |
 | `[llm]` | `system_prompt` | (voice-tuned default prompt) | system message prepended to every conversation |
 | `[tts]` | `engine` | `"kokoro_mlx"` | text-to-speech backend |
 | `[tts]` | `model` | `"prince-canuma/Kokoro-82M"` | HF repo id or local path |
@@ -97,6 +99,7 @@ LocalVoice reads `localvoice.toml` from the current directory by default
 | `[keys]` | `debounce_ms` | `120` | minimum hold time (ms) before a release is treated as a real recording |
 | `[audio]` | `input_device` | `""` (empty) | microphone device name; empty uses the system default |
 | `[audio]` | `output_device` | `""` (empty) | speaker device name; empty uses the system default |
+| `[audio]` | `rebuffer_ms` | `300` | anti-stutter gate: hold response audio until this much is queued after a mid-response stall |
 
 See `docs/models.md` for what to put in each `model` field — any HF repo id
 works, and so does any local MLX-format model folder (for example, anything
@@ -126,11 +129,14 @@ deep_model = "/Users/you/.lmstudio/models/lmstudio-community/Qwen3.6-27B-MLX-6bi
   `deep_model` is a startup config error, not a silent no-op.
 - `--think` enables Qwen3.6's reasoning mode for the session even if
   `[llm].think` is `false` in config (the two are OR'd together). Thinking
-  runs silently — it's never spoken aloud — and the reply starts only after
-  reasoning finishes, so a long think means a longer stretch of silence
-  before the assistant speaks.
+  is never spoken aloud; it is printed to the terminal as a `reasoning:`
+  line, and the spoken reply starts only after reasoning finishes, so a
+  long think means a longer stretch of silence before the assistant
+  speaks. Reasoning draws on `think_tokens` of extra generation budget.
+- `--model` overrides `[llm].model` for the session with any HF repo id or
+  local MLX model path, beating both the config file and `--deep`.
 
-`--deep` applies to both `localvoice run` and `localvoice bench`; `--think` is a `run`-only flag.
+`--deep` and `--model` apply to both `localvoice run` and `localvoice bench`; `--think` is a `run`-only flag.
 
 ## Privacy
 

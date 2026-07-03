@@ -23,10 +23,12 @@ def _longest_suffix_prefix(text: str, token: str) -> int:
 
 
 class TextFilter:
-    def __init__(self) -> None:
+    def __init__(self, on_think=None) -> None:
         self._buf = ""
         self._in_think = False
         self._in_fence = False
+        self._on_think = on_think
+        self._think_parts: list[str] = []
 
     def feed(self, delta: str) -> str:
         self._buf += delta
@@ -37,8 +39,13 @@ class TextFilter:
                 j = self._buf.find(token)
                 if j < 0:
                     hold = _longest_suffix_prefix(self._buf, token)
+                    if self._in_think:
+                        self._think_parts.append(self._buf[: len(self._buf) - hold])
                     self._buf = self._buf[len(self._buf) - hold :]
                     break
+                if self._in_think:
+                    self._think_parts.append(self._buf[:j])
+                    self._emit_think()
                 self._buf = self._buf[j + len(token) :]
                 self._in_think = False
                 self._in_fence = False
@@ -70,10 +77,19 @@ class TextFilter:
 
     def finish(self) -> str:
         if self._in_think or self._in_fence:
+            if self._in_think:
+                self._think_parts.append(self._buf)
+                self._emit_think()  # unclosed think: still surface what we have
             self._buf = ""
             return ""
         out, self._buf = self._buf, ""
         return out
+
+    def _emit_think(self) -> None:
+        text = "".join(self._think_parts).strip()
+        self._think_parts = []
+        if self._on_think is not None and text:
+            self._on_think(text)
 
 
 def strip_speech_markup(text: str) -> str:

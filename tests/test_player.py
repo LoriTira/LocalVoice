@@ -13,8 +13,10 @@ def test_tone_shape_and_fade():
     assert set(EARCONS) == {"start", "stop", "cancel"}
 
 
-def make(fired: list) -> PlaybackQueue:
-    return PlaybackQueue(on_response_finished=lambda: fired.append(True))
+def make(fired: list, rebuffer: int = 0) -> PlaybackQueue:
+    # rebuffer=0 disables the anti-stutter gate so accounting/drain tests stay focused;
+    # gate behavior is covered by the test_gate_* cases below with rebuffer=300.
+    return PlaybackQueue(on_response_finished=lambda: fired.append(True), rebuffer_samples=rebuffer)
 
 
 def test_pull_pads_with_zeros_when_empty():
@@ -75,3 +77,75 @@ def test_earcon_and_response_play_in_submit_order():
     first = q.pull(10)
     second = q.pull(10)
     assert np.allclose(first, 0.5) and np.allclose(second, 0.9)
+
+
+def test_gate_holds_small_response_chunk_until_threshold():
+    q = make([], rebuffer=300)
+    q.submit(np.ones(100, np.float32), tag=0)  # below 300-sample test threshold
+    assert not q.pull(50).any()  # gated: silence, chunk not consumed
+    assert q.spoken_tags() == set()
+    q.submit(np.ones(250, np.float32), tag=1)  # 350 queued >= threshold
+    assert q.pull(50).any()
+    assert 0 in q.spoken_tags()
+
+
+def test_gate_opens_on_mark_end_for_short_final_audio():
+    q = make([], rebuffer=300)
+    q.submit(np.ones(100, np.float32), tag=0)
+    assert not q.pull(50).any()
+    q.mark_end()  # short answer: must play even below threshold
+    assert q.pull(50).any()
+
+
+def test_gate_reengages_after_midresponse_drain():
+    fired: list = []
+    q = make(fired, rebuffer=300)
+    q.submit(np.ones(400, np.float32), tag=0)
+    q.pull(400)  # consume fully; response not ended -> gate re-arms
+    q.submit(np.ones(100, np.float32), tag=1)  # dribble below threshold
+    assert not q.pull(50).any()  # held: no stutter sliver
+    q.mark_end()
+    assert q.pull(50).any()
+    assert fired == []  # not drained yet
+    q.pull(200)
+    assert fired == [True]
+
+
+def test_earcons_bypass_gate():
+    q = make([], rebuffer=300)
+    q.submit_raw(np.full(50, 0.5, np.float32))
+    q.submit(np.ones(100, np.float32), tag=0)  # gated response behind the earcon
+    out = q.pull(80)
+    assert out[:50].any()  # earcon plays immediately
+    assert not out[50:].any()  # response still held
+
+
+def test_flush_rearms_gate():
+    q = make([], rebuffer=300)
+    q.submit(np.ones(400, np.float32), tag=0)
+    q.pull(10)  # gate opened
+    q.flush()
+    q.submit(np.ones(100, np.float32), tag=1)
+    assert not q.pull(50).any()  # gated again after flush
+
+
+def test_pull_or_none_reports_idle_and_gated():
+    q = make([], rebuffer=300)
+    assert q.pull_or_none(64) is None  # idle
+    q.submit(np.ones(100, np.float32), tag=0)
+    assert q.pull_or_none(64) is None  # gated: nothing consumable
+    q.mark_end()
+    block = q.pull_or_none(64)
+    assert block is not None and block.any()
+
+
+def test_pull_or_none_fires_drain_once():
+    fired: list = []
+    q = make(fired)
+    q.submit(np.ones(30, np.float32), tag=0)
+    q.mark_end()
+    first = q.pull_or_none(64)  # consumes all 30, zero-padded, fires
+    assert first is not None and first[:30].any() and not first[30:].any()
+    assert fired == [True]
+    assert q.pull_or_none(64) is None
+    assert fired == [True]

@@ -8,6 +8,8 @@ model = "mlx-community/Qwen3.6-35B-A3B-4bit"
 deep_model = ""
 think = false
 max_tokens = 1024
+think_tokens = 3072
+context_tokens = 8192
 system_prompt = """You are LocalVoice, a warm, sharp voice assistant running fully on this Mac. \
 You hear the user through speech recognition and your replies are spoken aloud by TTS. \
 Speak naturally in short sentences. Never use markdown, bullets, emoji, or code blocks; \
@@ -28,3 +30,4 @@ debounce_ms = 120
 [audio]
 input_device = ""
 output_device = ""
+rebuffer_ms = 300

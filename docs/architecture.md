@@ -81,9 +81,15 @@ earcon playback, and status printing (`_do()`).
 - **Audio callback threads** — `MicCapture` and `AudioPlayer`
   (`src/localvoice/audio/capture.py`, `audio/player.py`) each run a
   `sounddevice` stream with its own PortAudio-driven callback thread.
-  The mic callback writes frames into a `GatedBuffer` under a lock; the
-  player callback pulls samples from a `PlaybackQueue` under a lock. Neither
-  callback ever touches the state machine directly.
+  The mic callback writes frames into a `GatedBuffer` under a lock; playback
+  runs in write mode: a feeder thread pulls from the `PlaybackQueue` and
+  writes into a deep (~350 ms) device-side buffer that CoreAudio drains in
+  C. MLX holds the GIL in bursts up to ~300 ms (prefill/encode), which made
+  a Python render callback miss deadlines and buzz; with write mode a
+  stalled feeder just means the device buffer runs down silently.
+  `flush()` aborts and restarts the stream so barge-in stays instant. The
+  mic callback writes frames into a `GatedBuffer` under a lock. Neither
+  touches the state machine directly.
 - **Inference thread** — one persistent single-worker executor owns every
   MLX operation for the life of the process: engine imports, model loads,
   and every `pipeline.run_pipeline()` job (`Orchestrator._start_pipeline()`
