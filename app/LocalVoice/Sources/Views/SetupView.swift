@@ -14,13 +14,24 @@ import AppKit
 ///   the request button itself is the next step), `true` for `.authorized`,
 ///   `false` for anything else (`.denied`/`.restricted` collapse together —
 ///   both mean System Settings is now the only path forward).
-/// - `inputMonitoring`: `CGPreflightListenEventAccess()` verbatim. Unlike
-///   camera/mic, macOS has no "not yet asked" TCC state for Input
-///   Monitoring — preflight just reports the current grant — so this is a
-///   plain `Bool`, not an optional.
+/// - `inputMonitoring`: as of the B8 review's item 2, this is
+///   `hotkeyMonitor.available` — the *operational* truth of whether the
+///   `CGEventTap` is actually live — not `CGPreflightListenEventAccess()`.
+///   The two disagreed on at least one real machine (preflight reporting
+///   not-granted while the tap was live and the hotkey worked), which made
+///   this summary line contradict the Input Monitoring card's own caption
+///   underneath it. `available` is what determines whether the global
+///   hotkey actually fires, which is the thing this sentence is trying to
+///   tell the user about, so it wins. `SetupView`'s Input Monitoring card
+///   shows the preflight/available disagreement itself, separately, only
+///   when the two differ — see `inputMonitoringCard` below. Still a plain
+///   `Bool`, not an optional: `available` has no "not yet asked" state
+///   either (it's `false` until a tap exists, `true` once one does).
 ///
 /// Sentence case, no emoji, no exclamation marks, per the task-7 contract —
-/// the six exact strings are pinned in `PermissionLogicTests` first.
+/// the six exact strings are pinned in `PermissionLogicTests` first (those
+/// strings are unchanged by the B8 review; only the caller's *source* for
+/// the `inputMonitoring` boolean moved, not the pure function's behavior).
 func permissionSummary(mic: Bool?, inputMonitoring: Bool) -> String {
     let micSentence: String
     switch mic {
@@ -47,11 +58,13 @@ func permissionSummary(mic: Bool?, inputMonitoring: Bool) -> String {
 ///    Microphone privacy pane once a decision exists (request buttons don't
 ///    fire twice — macOS only shows the system prompt on the *first*
 ///    request per app; a second call while `.denied` is silently a no-op).
-/// 2. **Input Monitoring** — `CGPreflightListenEventAccess()` for the
-///    status, `CGRequestListenEventAccess()` for the prompt (this API isn't
-///    gated on "not yet asked" the way `AVCaptureDevice` is, so its request
-///    button is always available), plus a deep link to the Input Monitoring
-///    pane.
+/// 2. **Input Monitoring** — headline status is `hotkeyMonitor.available`
+///    (the tap's own operational truth, per the B8 review's item 2; see
+///    `inputMonitoringCard`'s doc comment), with `CGPreflightListenEventAccess()`
+///    demoted to a caption shown only when it disagrees. `CGRequestListenEventAccess()`
+///    for the prompt (this API isn't gated on "not yet asked" the way
+///    `AVCaptureDevice` is, so its request button is always available),
+///    plus a deep link to the Input Monitoring pane.
 /// 3. **Engine** — live connection state, the protocol version this build
 ///    speaks, an editable dev-checkout path (`UserDefaults`-backed, same
 ///    key `LocalVoiceApp` reads at launch), and a restart button that
@@ -104,7 +117,11 @@ struct SetupView: View {
     // MARK: - Summary
 
     private var summaryLine: some View {
-        Text(permissionSummary(mic: micAsBool, inputMonitoring: inputMonitoringGranted))
+        // B8 review, item 2: `hotkeyMonitor.available` — the tap's own
+        // operational truth — not `inputMonitoringGranted` (the preflight
+        // check), is the authoritative source for the summary's Input
+        // Monitoring half. See `permissionSummary`'s doc comment above.
+        Text(permissionSummary(mic: micAsBool, inputMonitoring: hotkeyMonitor.available))
             .font(.callout)
             .foregroundStyle(.secondary)
     }
@@ -154,20 +171,34 @@ struct SetupView: View {
 
     // MARK: - Input Monitoring card
 
+    /// **B8 review, item 2:** this card used to headline
+    /// `CGPreflightListenEventAccess()` (`inputMonitoringGranted`) with the
+    /// tap's own `hotkeyMonitor.available` relegated to a caption
+    /// underneath. On at least one real machine those two disagreed —
+    /// preflight reported not-granted while the tap was in fact live and
+    /// the hotkey worked — which produced a headline reading "Not granted."
+    /// directly above a caption reading "Global hotkey is active.": a
+    /// live, visible contradiction on the one screen whose entire job is to
+    /// tell the user whether the hotkey works.
+    ///
+    /// Decided fix: `available` is the *operational* truth (it's
+    /// `CGEvent.tapCreate` actually having succeeded, not a TCC database
+    /// read), and the operational truth is what determines whether the
+    /// global hotkey fires — so it becomes the headline. The old preflight
+    /// read demotes to a caption shown only when it *disagrees* with
+    /// `available`, since agreement is the expected case and not worth a
+    /// permanent line of UI; disagreement is the "known macOS quirk" worth
+    /// calling out so the user doesn't chase a permission that, per the
+    /// tap's own evidence, isn't actually the problem.
     private var inputMonitoringCard: some View {
         card(title: "Input Monitoring", symbolName: "keyboard") {
-            Text(inputMonitoringGranted ? "Granted." : "Not granted.")
+            Text(hotkeyMonitor.available ? "Global hotkey is active." : "Not granted.")
                 .font(.body)
-            // Task 8: `hotkeyMonitor.available` is the tap's own
-            // ground truth (whether `CGEvent.tapCreate` actually succeeded),
-            // shown alongside — not instead of — the preflight permission
-            // check just above. The two normally agree, but this is what
-            // actually tells the user whether the global right-command
-            // hotkey works right now, as distinct from whether the
-            // permission that hotkey depends on has been granted.
-            Text(hotkeyMonitor.available ? "Global hotkey is active." : "Global hotkey is not active.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if inputMonitoringGranted != hotkeyMonitor.available {
+                Text("System preflight disagrees (known macOS quirk); the tap is what matters.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 if !inputMonitoringGranted {
                     Button("Request Access") {

@@ -16,12 +16,30 @@ import CoreGraphics
 /// global-hotkey keys per the task-8 contract (the GUI owns the key tap in
 /// Swift; `serve` does not install one — see `docs/gui.md` line 285).
 ///
-/// The complete truth table (task-8 brief, verbatim):
+/// The complete truth table (task-8 brief, as amended by the B8 review's
+/// item 3 — see below):
 /// - `(flagsChanged, 54, commandBit: true,  pttCurrentlyDown: false)` -> `.pttDown`
 /// - `(flagsChanged, 54, commandBit: false, pttCurrentlyDown: true)`  -> `.pttUp`
-/// - `(flagsChanged, 54, commandBit: true,  pttCurrentlyDown: true)`  -> `.none`
+/// - `(flagsChanged, 54, commandBit: true,  pttCurrentlyDown: true)`  -> `.pttUp`
 /// - `(keyDown, 53, _, _)` -> `.esc`
 /// - everything else -> `.none`
+///
+/// **B8 review, item 3:** the third row above originally read `.none` (the
+/// task-8 brief's literal text) on the theory that `commandBit` still being
+/// set meant right-command was still held, so nothing should fire. That
+/// reasoning doesn't hold: `commandBit` is the *aggregate* command-key flag,
+/// true whenever *either* command key is down. Holding left-⌘ and tapping
+/// right-⌘ while it's held, then releasing right-⌘ first, produces exactly
+/// this row — keycode 54 identifies a right-command transition,
+/// `pttCurrentlyDown` is true, but `commandBit` is still true because left-⌘
+/// is still held. Under the old `.none` row this swallowed right-⌘'s
+/// release outright and left PTT stuck down. `pttCurrentlyDown` now wins
+/// unconditionally on keycode 54: once PTT is down, any further transition
+/// on that specific key is its release, full stop, regardless of what the
+/// aggregate flag happens to read. See `decide(...)`'s doc comment in
+/// `HotkeyMonitor.swift` for the complete before/after reasoning, and
+/// `testDualCommandKeyReleaseFiresPttUpNotSwallowedByAggregateCommandBit`
+/// below for the regression test named for this specific scenario.
 ///
 /// Below, each row of that table gets its own test, plus every "else" row
 /// the brief calls out by name (wrong keycode, `keyUp` type, Esc while PTT
@@ -65,15 +83,38 @@ final class HotkeyLogicTests: XCTestCase {
         )
     }
 
-    // MARK: - The two named "none" rows on keycode 54 (repeat-suppression)
+    // MARK: - Keycode 54 while PTT is already down (B8 review, item 3)
 
-    /// Command bit still set while PTT is already down: a repeat
-    /// `flagsChanged` (or a second modifier changing alongside an already-held
-    /// right command) must not fire a second `pttDown`.
-    func testFlagsChangedRightCommandWithCommandBitWhileAlreadyDownYieldsNone() {
+    /// Command bit still set while PTT is already down now yields `.pttUp`,
+    /// not `.none` — this is the row the B8 review's item 3 corrected (see
+    /// the file-level doc comment above and `decide(...)`'s doc comment in
+    /// `HotkeyMonitor.swift` for the full reasoning). `pttCurrentlyDown`
+    /// wins unconditionally on keycode 54: once PTT is down, *any* further
+    /// transition on that key — command bit set or clear — must be its
+    /// release, because `commandBit` only ever reports the aggregate
+    /// command-key state, never which command key actually moved.
+    func testFlagsChangedRightCommandWithCommandBitWhileAlreadyDownYieldsPttUp() {
         XCTAssertEqual(
             decide(type: .flagsChanged, keycode: 54, commandBit: true, pttCurrentlyDown: true),
-            .none
+            .pttUp
+        )
+    }
+
+    /// Regression test for the B8 review's item 3 finding, named for the
+    /// concrete real-world scenario rather than the abstract truth-table
+    /// cell (the test directly above covers the same cell mechanically —
+    /// this one exists so the bug is discoverable by name/grep on its own).
+    /// Holding left-⌘ and right-⌘ together, then releasing right-⌘ first,
+    /// leaves the aggregate `.maskCommand` bit set (left-⌘ is still down)
+    /// even though the right-⌘ transition this event reports *is* a
+    /// release. Before this fix, the aggregate bit being true made this
+    /// event fall through to `.none`, swallowing the release and leaving
+    /// PTT stuck down until something unrelated (left-⌘'s own release)
+    /// happened to clear the aggregate flag. It must resolve to `.pttUp`.
+    func testDualCommandKeyReleaseFiresPttUpNotSwallowedByAggregateCommandBit() {
+        XCTAssertEqual(
+            decide(type: .flagsChanged, keycode: 54, commandBit: true, pttCurrentlyDown: true),
+            .pttUp
         )
     }
 

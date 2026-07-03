@@ -23,15 +23,38 @@ enum KeyDecision: Equatable {
 /// Right-command (keycode 54) reports its press/release state through the
 /// `.maskCommand` bit of a `flagsChanged` event rather than through
 /// `keyDown`/`keyUp` the way ordinary keys do — modifier keys never generate
-/// `keyDown`/`keyUp` at all, only `flagsChanged` with the aggregate flags
-/// mask before/after the change, which is why `commandBit` (not the event's
-/// own type) is what distinguishes a right-command press from a release.
-/// `pttCurrentlyDown` — the caller's own last-known PTT state, not anything
-/// read from the event — is threaded through so a repeat `flagsChanged` with
-/// the command bit still set (e.g. another modifier changing while
-/// right-command stays held) can't fire a second `pttDown`, and so a
-/// `flagsChanged` with the command bit already clear can't fire a spurious
-/// `pttUp` when nothing was down to release.
+/// `keyDown`/`keyUp` at all, only `flagsChanged` with the *aggregate* flags
+/// mask after the change, which is why `commandBit` (not the event's own
+/// type) is what a naive reading would use to distinguish a right-command
+/// press from a release. `pttCurrentlyDown` — the caller's own last-known
+/// PTT state, not anything read from the event — is threaded through so a
+/// repeat `flagsChanged` with the command bit still set (e.g. another
+/// modifier changing while right-command stays held) can't fire a second
+/// `pttDown`.
+///
+/// **B8 review, item 3 — why `pttCurrentlyDown` wins over `commandBit` on
+/// release, not just on the repeat-suppression case above:** `commandBit` is
+/// `flags.contains(.maskCommand)` on the *aggregate* event flags, which is
+/// true if *either* command key is down, not specifically right-command.
+/// Holding left-⌘ and right-⌘ together and releasing only right-⌘ produces
+/// `(flagsChanged, 54, commandBit: true, pttCurrentlyDown: true)` — keycode
+/// 54 identifies this as a right-command transition, `pttCurrentlyDown` is
+/// true so PTT is live, but `commandBit` is *still* true because left-⌘ is
+/// still down. The original `!commandBit && pttCurrentlyDown` release check
+/// missed this: it required the aggregate bit to be fully clear, so this
+/// event fell through to the `commandBit && !pttCurrentlyDown` guard
+/// (false, `pttCurrentlyDown` is true), then the second guard (false,
+/// `commandBit` is true), landing on `.none` — right-⌘'s release was
+/// silently swallowed and PTT stuck down until something else (left-⌘'s own
+/// release, unrelated to the key the user thinks they let go of) happened to
+/// clear the aggregate bit. Keycode 54 on `flagsChanged` is *always* a
+/// right-command transition regardless of what `commandBit` reads (that bit
+/// only ever tells you the aggregate command state, never which command key
+/// moved) — so once `pttCurrentlyDown` is true, any right-command transition
+/// at all must be its release; `commandBit`'s value at that point is
+/// irrelevant. Checking `pttCurrentlyDown` first, unconditionally, is what
+/// makes that hold: press can only be reached once release has already been
+/// ruled out by `pttCurrentlyDown` being false.
 ///
 /// Esc (keycode 53) is an ordinary key, so it reports through `keyDown`
 /// directly and its decision ignores both `commandBit` and
@@ -41,11 +64,11 @@ enum KeyDecision: Equatable {
 func decide(type: CGEventType, keycode: Int64, commandBit: Bool, pttCurrentlyDown: Bool) -> KeyDecision {
     switch (type, keycode) {
     case (.flagsChanged, HotkeyMonitor.rightCommandKeycode):
-        if commandBit && !pttCurrentlyDown {
-            return .pttDown
-        }
-        if !commandBit && pttCurrentlyDown {
+        if pttCurrentlyDown {
             return .pttUp
+        }
+        if commandBit {
+            return .pttDown
         }
         return .none
 
@@ -219,11 +242,38 @@ final class HotkeyMonitor {
     /// those across the boundary, sidesteps it — and happens to be exactly
     /// the split `decide(...)`'s signature already wants (plain
     /// `CGEventType`/`Int64`/`Bool`, no `CGEvent`).
+    ///
+    /// **B8 review, item 1 (critical):** macOS disables an event tap —
+    /// without tearing it down or calling back into `refresh()` — after a
+    /// timeout if the callback doesn't return promptly enough
+    /// (`kCGEventTapDisabledByTimeout`), or after the user disables it from
+    /// Accessibility/Input Monitoring settings
+    /// (`kCGEventTapDisabledByUserInput`). Left unhandled, either one is a
+    /// silent death: `available` still reads `true`, `tap` is still
+    /// non-`nil`, and the global hotkey simply stops firing with no signal
+    /// anywhere. A single stall on the main thread (a long synchronous call,
+    /// a modal, a slow first-launch model load) is enough to trip the
+    /// timeout case, so this is not a rare corner. The fix re-enables the
+    /// tap right here, inline, rather than routing through `refresh()`
+    /// (which no-ops when `tap != nil` and exists to *create* a tap, not
+    /// revive a disabled one) or `handle`/`decide` (neither of which is
+    /// event-type-shaped for this; these two types carry no keycode).
     private static let tapCallback: CGEventTapCallBack = { _, type, event, refcon in
-        let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-        let commandBit = event.flags.contains(.maskCommand)
         guard let refcon else { return Unmanaged.passUnretained(event) }
         let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
+
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            MainActor.assumeIsolated {
+                if let tap = monitor.tap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                    HotkeyMonitor.logger.notice("event tap re-enabled after timeout")
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+        let commandBit = event.flags.contains(.maskCommand)
         MainActor.assumeIsolated {
             monitor.handle(type: type, keycode: keycode, commandBit: commandBit)
         }
