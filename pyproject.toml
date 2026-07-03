@@ -1,0 +1,41 @@
+[project]
+name = "localvoice"
+version = "0.1.0"
+description = "Local push-to-talk voice assistant for Apple Silicon: whisper -> local LLM -> Kokoro, ~1s voice-to-voice"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "mlx-lm>=0.24",
+  "mlx-whisper>=0.4",
+  "mlx-audio>=0.2",
+  "sounddevice>=0.5",
+  "pynput>=1.8",
+  "numpy>=1.26",
+  "huggingface_hub>=0.26",
+]
+
+[project.scripts]
+localvoice = "localvoice.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localvoice"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = ["slow: needs real models and hardware; excluded in CI"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["I"]

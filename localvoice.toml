@@ -1,0 +1,30 @@
+[stt]
+engine = "mlx_whisper"
+model = "mlx-community/whisper-large-v3-turbo"
+
+[llm]
+engine = "mlx_lm"
+model = "mlx-community/Qwen3.6-35B-A3B-4bit"
+deep_model = ""
+think = false
+max_tokens = 1024
+system_prompt = """You are LocalVoice, a warm, sharp voice assistant running fully on this Mac. \
+You hear the user through speech recognition and your replies are spoken aloud by TTS. \
+Speak naturally in short sentences. Never use markdown, bullets, emoji, or code blocks; \
+describe code aloud instead. Default to two or three sentences and offer to go deeper \
+rather than lecturing. If the transcript shows you were interrupted mid-sentence, pick up gracefully."""
+
+[tts]
+engine = "kokoro_mlx"
+model = "prince-canuma/Kokoro-82M"
+voice = "af_heart"
+speed = 1.0
+
+[keys]
+ptt = "cmd_r"
+stop = "esc"
+debounce_ms = 120
+
+[audio]
+input_device = ""
+output_device = ""
