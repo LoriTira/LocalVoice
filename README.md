@@ -39,6 +39,7 @@ makes the interaction feel instant instead of laggy.
 ## Install
 
 ```bash
+brew install espeak-ng   # TTS phonemizer fallback (see Requirements)
 git clone <this repo>
 cd LocalVoice
 uv sync
@@ -129,7 +130,7 @@ deep_model = "/Users/you/.lmstudio/models/lmstudio-community/Qwen3.6-27B-MLX-6bi
   assistant speaks a short filler line while it keeps thinking, rather than
   leaving you with silence.
 
-Both flags apply to `localvoice run` and `localvoice bench`.
+`--deep` applies to both `localvoice run` and `localvoice bench`; `--think` is a `run`-only flag.
 
 ## Privacy
 
