@@ -257,7 +257,7 @@ applies the change to the running process per this table (spec §5):
 
 | Fields | Action | Reflected in `config_applied` |
 |---|---|---|
-| `tts.voice`, `tts.speed`, `llm.think`, `llm.max_tokens`, `llm.context_tokens`, `llm.system_prompt`, `keys.debounce_ms` | Applied immediately on the live config object. No reload, no audio restart. | `reloaded: []` |
+| `tts.voice`, `tts.speed`, `llm.think`, `llm.max_tokens`, `llm.context_tokens`, `llm.system_prompt`, `keys.debounce_ms` | Applied immediately on the live config object. No reload, no audio restart. A turn already in flight keeps its captured values — instant changes take effect at the next turn boundary. | `reloaded: []` |
 | `llm.model`, `llm.deep_model`, `stt.model`, `tts.model`, any `*.engine` | The named engine (`stt`/`llm`/`tts`) is reloaded on the single inference thread — same thread every load and pipeline run uses — emitting `load_progress(start)`/`load_progress(done)`. Conversation history is untouched; a turn already in flight keeps running on the old engine instance until it finishes (reloads queue behind it on the same thread). | `reloaded: ["llm"]` (etc., in `stt, llm, tts` order, deduped) |
 | `audio.input_device`, `audio.output_device`, `audio.rebuffer_ms` | Player and capture streams are stopped and restarted. | `reloaded: []`, but the restart itself can emit `error` if the new device is unavailable |
 | `keys.ptt`, `keys.stop` | Stored on the live config for terminal-mode (`localvoice run`) use; **the GUI owns the actual key tap in Swift** and applies these client-side. `serve` does not install any hotkey listener. | `reloaded: []` |
