@@ -117,3 +117,36 @@ def test_empty_llm_output_finishes_cleanly():
     # pending was aborted, so a later commit must no-op and leave no turn behind
     t.commit()
     assert t.history() == []
+
+
+def test_metrics_emitted_once_with_expected_keys():
+    metrics: list[dict] = []
+    deps = make_deps()
+    deps.on_metrics = metrics.append
+    run(deps, speech())
+    assert len(metrics) == 1
+    m = metrics[0]
+    assert set(m) == {"stt", "ttft", "first_clause", "tts_first", "total"}
+    assert all(isinstance(v, float) and v >= 0.0 for v in m.values())
+    assert m["total"] >= m["stt"]
+
+
+def test_metrics_not_emitted_on_quiet_discard_or_empty_output():
+    metrics: list[dict] = []
+    deps = make_deps()
+    deps.on_metrics = metrics.append
+    run(deps, np.zeros(SR, np.float32))
+    deps2 = make_deps(llm=FakeLLM([]))
+    deps2.on_metrics = metrics.append
+    run(deps2, speech())
+    assert metrics == []
+
+
+def test_metrics_not_emitted_on_cancel():
+    metrics: list[dict] = []
+    cancel = threading.Event()
+    cancel.set()
+    deps = make_deps()
+    deps.on_metrics = metrics.append
+    run(deps, speech(), cancel)
+    assert metrics == []
