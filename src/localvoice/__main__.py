@@ -63,6 +63,10 @@ def cmd_run(args) -> None:
     orch_ref = {}
 
     def on_finished():
+        # Fire-time gen read: a drain callback stalled across a full barge-in +
+        # re-release (microsecond window stretched over >300ms of human action)
+        # could stamp the new generation. Judged unreachable in practice; if it
+        # ever bites, plumb mark_end(gen) through PlaybackQueue instead.
         orch = orch_ref.get("orch")
         if orch is not None:
             orch.post(Event(EventType.RESPONSE_FINISHED, gen=orch._gen))
@@ -83,12 +87,12 @@ def cmd_run(args) -> None:
     orch_ref["orch"] = orch
     for name, engine in (("whisper", stt), ("llm", llm), ("kokoro", tts)):
         _load_timed(name, engine)
-    capture.start()
-    player.start()
     listener = HotkeyListener(cfg.keys, orch.post)
-    listener.start()
-    print("ready - hold right-command and talk; esc stops; ctrl-c quits")
     try:
+        capture.start()
+        player.start()
+        listener.start()
+        print("ready - hold right-command and talk; esc stops; ctrl-c quits")
         orch.run_forever()
     except KeyboardInterrupt:
         pass

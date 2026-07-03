@@ -66,6 +66,8 @@ def run_bench(cfg: Config, runs: int = 3) -> None:
         if first_clause is None:
             first_clause = chunker.flush() or "Hello."
             t_first_clause = time.perf_counter()
+        if t_first_token is None:  # degenerate zero-delta stream
+            t_first_token = t_first_clause
         next(iter(tts.synthesize(first_clause)))
         t_tts = time.perf_counter()
         rows.append(
