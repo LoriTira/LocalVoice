@@ -1,8 +1,14 @@
 # LocalVoice — architecture design
 
 Date: 2026-07-03
-Status: approved decisions, pending final spec review
+Status: implemented (v1); amendment trail below
 Target machine: MacBook Pro M5 Pro, 64 GB unified memory, macOS 26.5.1
+
+> **Post-implementation amendments (2026-07-03).** Recorded during execution and final review; each is reflected in the code and `docs/architecture.md`:
+> 1. Concurrency: threads + queues instead of asyncio (§3, amended at planning).
+> 2. Cancel sequences run truncate-history BEFORE flush-player — flush clears the spoken-tag accounting (§3, found by review, fixed).
+> 3. LLM prompt caching reworked to token-level prefix reuse: the full conversation is re-templated canonically each turn and only the un-cached suffix is prefilled; caches that cannot trim (hybrid-attention models like Qwen3.6) fall back to full re-prefill. Replaces the original message-list "incremental" policy, which final review found drift-defeated and template-malformed.
+> 4. Deferred from §5/§3 to known limitations: audio-device-change stream restart; the spoken thinking-mode filler (thinking is silent in v1). Measured v1 latency: 0.82 s voice-to-voice (35B-A3B), 1.43 s (27B deep) — see `docs/latency.md`.
 
 ## 1. Goal
 
