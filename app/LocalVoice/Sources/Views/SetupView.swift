@@ -64,6 +64,7 @@ func permissionSummary(mic: Bool?, inputMonitoring: Bool) -> String {
 struct SetupView: View {
     @Bindable var appState: AppState
     let client: EngineClient
+    let hotkeyMonitor: HotkeyMonitor
 
     /// The protocol version this build's `EngineEvent`/`EngineCommand`
     /// types speak — `docs/gui.md`'s `ready.version` is checked against
@@ -91,6 +92,12 @@ struct SetupView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshPermissions()
+            // Task 8: the same refocus signal that re-checks
+            // `CGPreflightListenEventAccess()` above also retries tap
+            // creation — a `HotkeyMonitor.refresh()` no-ops if a tap is
+            // already live, so this is safe to call on every refocus, not
+            // just the first one after a permission grant.
+            hotkeyMonitor.refresh()
         }
     }
 
@@ -151,6 +158,16 @@ struct SetupView: View {
         card(title: "Input Monitoring", symbolName: "keyboard") {
             Text(inputMonitoringGranted ? "Granted." : "Not granted.")
                 .font(.body)
+            // Task 8: `hotkeyMonitor.available` is the tap's own
+            // ground truth (whether `CGEvent.tapCreate` actually succeeded),
+            // shown alongside — not instead of — the preflight permission
+            // check just above. The two normally agree, but this is what
+            // actually tells the user whether the global right-command
+            // hotkey works right now, as distinct from whether the
+            // permission that hotkey depends on has been granted.
+            Text(hotkeyMonitor.available ? "Global hotkey is active." : "Global hotkey is not active.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack {
                 if !inputMonitoringGranted {
                     Button("Request Access") {

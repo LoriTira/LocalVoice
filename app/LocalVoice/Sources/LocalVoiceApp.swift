@@ -46,6 +46,18 @@ struct LocalVoiceApp: App {
     static let devCheckoutPathDefaultsKey = "devCheckoutPath"
 
     private let client: EngineClient
+
+    /// Global push-to-talk (Task 8) — a plain stored `let`, not `@State`,
+    /// same reasoning as `client` just above: `HotkeyMonitor` is a reference
+    /// type (a `@MainActor final class`), so its identity already survives
+    /// `body`'s re-evaluations without SwiftUI's storage box; `@State` here
+    /// would only add an extra layer of indirection around a value that
+    /// doesn't need one. `App.init()` runs exactly once per process launch
+    /// (SwiftUI's guarantee for the root `App` conformer, same guarantee
+    /// `client`'s single construction already relies on), so this is
+    /// created once, not once per scene rebuild.
+    private let hotkeyMonitor = HotkeyMonitor()
+
     @State private var appState = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -56,6 +68,28 @@ struct LocalVoiceApp: App {
         let client = EngineClient(mode: mode)
         self.client = client
         appDelegate.engineClient = client
+
+        // Global-hotkey callbacks route through the same `EngineClient` the
+        // on-screen hold-to-talk button uses (`TalkView.holdToTalkButton`) —
+        // the engine sees identical `ptt_down`/`ptt_up`/`esc` commands
+        // whichever source triggered them, so it (not this wiring) is what's
+        // responsible for e.g. rejecting/ignoring a duplicate `ptt_down`
+        // while already listening. Each command is constructed inline
+        // inside its own `Task { await client.send(...) }`, matching
+        // `TalkView`'s documented pattern for the same Swift 6
+        // "sending value risks causing data races" false-positive that
+        // routing a pre-built `EngineCommand` through an intermediate
+        // synchronous closure parameter was observed to trip there.
+        let hotkeyClient = client
+        hotkeyMonitor.onPttDown = {
+            Task { await hotkeyClient.send(.pttDown) }
+        }
+        hotkeyMonitor.onPttUp = { heldMs in
+            Task { await hotkeyClient.send(.pttUp(heldMs: heldMs)) }
+        }
+        hotkeyMonitor.onEsc = {
+            Task { await hotkeyClient.send(.esc) }
+        }
 
         // `EngineClient.events` finishes only after `stop()` or a final
         // (no-respawn) death — see Task 3/4's notes — so this loop is
@@ -78,7 +112,7 @@ struct LocalVoiceApp: App {
 
     var body: some Scene {
         WindowGroup("LocalVoice") {
-            MainWindow(appState: appState, client: client)
+            MainWindow(appState: appState, client: client, hotkeyMonitor: hotkeyMonitor)
                 .frame(minWidth: 720, minHeight: 480)
         }
     }

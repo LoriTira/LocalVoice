@@ -30,6 +30,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 struct MainWindow: View {
     @Bindable var appState: AppState
     let client: EngineClient
+    let hotkeyMonitor: HotkeyMonitor
 
     @State private var selection: SidebarItem? = .talk
 
@@ -60,7 +61,7 @@ struct MainWindow: View {
         case .settings:
             SettingsView(appState: appState, client: client)
         case .setup:
-            SetupView(appState: appState, client: client)
+            SetupView(appState: appState, client: client, hotkeyMonitor: hotkeyMonitor)
         }
     }
 
