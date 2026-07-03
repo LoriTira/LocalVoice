@@ -1,4 +1,5 @@
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -219,8 +220,28 @@ def cmd_bench(args) -> None:
     run_bench(cfg, runs=args.runs)
 
 
+_COMMANDS = {"run", "setup", "bench"}
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """`localvoice --think` must mean `localvoice run --think`: flags belong to
+    subparsers, so inject the default subcommand when none was given (but let
+    bare -h/--help reach the top-level parser)."""
+    if argv and argv[0] in ("-h", "--help"):
+        return argv
+    if not argv or argv[0] not in _COMMANDS:
+        return ["run", *argv]
+    return argv
+
+
+def parse_cli(argv: list[str] | None = None) -> argparse.Namespace:
+    if argv is None:
+        argv = sys.argv[1:]
+    return build_parser().parse_args(_normalize_argv(argv))
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_cli()
     {"run": cmd_run, "setup": cmd_setup, "bench": cmd_bench}[args.command](args)
 
 
