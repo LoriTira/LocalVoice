@@ -16,6 +16,7 @@ class EventType(Enum):
     FIRST_AUDIO = auto()
     RESPONSE_FINISHED = auto()
     PIPELINE_ERROR = auto()
+    SHUTDOWN = auto()
 
 
 @dataclass(frozen=True)

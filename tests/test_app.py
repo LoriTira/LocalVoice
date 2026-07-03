@@ -117,3 +117,17 @@ def test_on_state_callback_receives_transitions():
     assert seen[-1] is S.LISTENING
     orch.handle(Event(E.ESC))
     assert seen[-1] is S.IDLE
+
+
+def test_shutdown_drains_queued_events_before_exit():
+    import threading
+
+    orch, capture, player, transcript = make()
+    orch.post(Event(E.PTT_DOWN))
+    orch.post(Event(E.PTT_UP, held_ms=400))
+    orch.shutdown()  # sentinel queued AFTER the two events
+    t = threading.Thread(target=orch.run_forever, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert "disarm" in capture.log  # both PTT events were processed first

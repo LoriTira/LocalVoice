@@ -52,19 +52,20 @@ class Orchestrator:
         self._inference = inference or ThreadPoolExecutor(max_workers=1)
         self._pipeline_future: Future | None = None
         self._gen = 0
-        self._running = True
 
     def post(self, event: Event) -> None:
         self._queue.put(event)
 
     def shutdown(self) -> None:
-        self._running = False
         self._cancel.set()
-        self._queue.put(Event(E.ESC))  # wake the loop
+        self._queue.put(Event(E.SHUTDOWN))
 
     def run_forever(self) -> None:
-        while self._running:
-            self.handle(self._queue.get())
+        while True:
+            event = self._queue.get()
+            if event.type is E.SHUTDOWN:
+                break
+            self.handle(event)
 
     def handle(self, event: Event) -> None:
         if event.type in _PIPELINE_EVENTS and event.gen != self._gen:

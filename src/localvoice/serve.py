@@ -121,8 +121,8 @@ class Serve:
         except Exception as exc:  # noqa: BLE001 — GUI Setup pane handles it
             self.emit({"event": "error", "message": f"audio unavailable: {exc}"})
         self._inference.submit(self._load_engines)
-        loop = threading.Thread(target=self._orch.run_forever, daemon=True)
-        loop.start()
+        self._loop = threading.Thread(target=self._orch.run_forever, daemon=True)
+        self._loop.start()
         for line in self._stdin:
             line = line.strip()
             if not line:
@@ -282,6 +282,8 @@ class Serve:
 
     def _shutdown(self) -> None:
         self._orch.shutdown()
+        if getattr(self, "_loop", None) is not None:
+            self._loop.join(timeout=5)
         for dev in (self._player, self._capture):
             try:
                 dev.stop()
