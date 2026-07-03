@@ -49,9 +49,38 @@ def _load_timed(name: str, engine) -> None:
     print(f"{time.perf_counter() - t0:.1f}s")
 
 
+def _missing_models(cfg) -> list[tuple[str, str]]:
+    """Return (label, model) for each engine model that is neither an existing
+    local path nor an already-cached HF snapshot. A bare string that is neither
+    a path nor a repo id raises SystemExit (unrecoverable misconfiguration)."""
+    from huggingface_hub import snapshot_download
+
+    missing: list[tuple[str, str]] = []
+    for label, model in (("stt", cfg.stt.model), ("llm", cfg.llm.model), ("tts", cfg.tts.model)):
+        if Path(model).expanduser().exists():
+            continue
+        if "/" not in model:
+            raise SystemExit(
+                f"{label}: model is neither an existing path nor an HF repo id: {model}"
+            )
+        try:
+            snapshot_download(repo_id=model, local_files_only=True)
+        except Exception:  # noqa: BLE001 — not in local HF cache
+            missing.append((label, model))
+    return missing
+
+
 def cmd_run(args) -> None:
     cfg = _load_config(args)
     _preflight()
+    missing = _missing_models(cfg)
+    if missing:
+        listing = "\n".join(f"  {label}: {model}" for label, model in missing)
+        raise SystemExit(
+            "missing models (not a local path and not in the HF cache):\n"
+            f"{listing}\n"
+            "run `uv run localvoice setup` to download them first."
+        )
     stt, llm, tts = _make_engines(cfg)
     from localvoice.app import Orchestrator
     from localvoice.audio.capture import MicCapture
@@ -129,16 +158,7 @@ def cmd_setup(args) -> None:
     cfg = _load_config(args)
     from huggingface_hub import snapshot_download
 
-    targets = []
-    for label, model in (("stt", cfg.stt.model), ("llm", cfg.llm.model), ("tts", cfg.tts.model)):
-        if Path(model).expanduser().exists():
-            print(f"{label}: local path present: {model}")
-        elif "/" in model:
-            targets.append((label, model))
-        else:
-            raise SystemExit(
-                f"{label}: model is neither an existing path nor an HF repo id: {model}"
-            )
+    targets = _missing_models(cfg)
     if not targets:
         print("everything already available")
         return

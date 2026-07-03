@@ -160,6 +160,22 @@ An uninterrupted turn instead calls `Transcript.commit()`, which joins
 *all* pending clauses with no truncation marker — `RESPONSE_FINISHED` in
 `PROCESSING`/`SPEAKING` fires `COMMIT_TURN`, not `TRUNCATE_HISTORY`.
 
+## Known limitations (v1)
+
+1. **Audio device changes do not auto-restart streams.** Swapping input or
+   output device mid-session does not re-open the capture/playback streams
+   (spec §5 behavior deferred).
+2. **Thinking mode has no spoken filler.** With `--think`, the assistant is
+   silent until reasoning completes and only then begins speaking the reply
+   (spec §3 behavior deferred).
+3. **Barge-in engine-level overlap.** After a barge-in, the superseded
+   pipeline thread may complete one final MLX call before it observes
+   cancellation — a bounded, engine-level overlap.
+4. **KV prefix-reuse fallback on hybrid-attention models.** On hybrid
+   attention models (the Qwen3.6 family) the KV prefix-reuse falls back to a
+   full re-prefill each turn because their recurrent-state caches cannot be
+   trimmed by mlx-lm.
+
 ## Related reading
 
 - `docs/superpowers/specs/2026-07-03-localvoice-architecture-design.md` —

@@ -27,9 +27,9 @@ makes the interaction feel instant instead of laggy.
 
 - An Apple Silicon Mac (M-series). LocalVoice is MLX-based and does not run
   the model inference path on Intel Macs.
-- 16 GB+ unified memory for small/lightweight model configurations; 32 GB+
-  recommended for the default configuration (Qwen3.6-35B-A3B 4-bit, plus
-  Whisper and Kokoro alongside it).
+- 32 GB minimum for the default model, 48 GB or more comfortable — the
+  default configuration (Qwen3.6-35B-A3B 4-bit, plus Whisper and Kokoro
+  alongside it).
 - [`uv`](https://docs.astral.sh/uv/) for dependency management and running
   the project.
 - `espeak-ng` (via Homebrew: `brew install espeak-ng`) — a fallback
@@ -126,9 +126,9 @@ deep_model = "/Users/you/.lmstudio/models/lmstudio-community/Qwen3.6-27B-MLX-6bi
   `deep_model` is a startup config error, not a silent no-op.
 - `--think` enables Qwen3.6's reasoning mode for the session even if
   `[llm].think` is `false` in config (the two are OR'd together). Thinking
-  runs silently — it's never spoken aloud — and if it runs long, the
-  assistant speaks a short filler line while it keeps thinking, rather than
-  leaving you with silence.
+  runs silently — it's never spoken aloud — and the reply starts only after
+  reasoning finishes, so a long think means a longer stretch of silence
+  before the assistant speaks.
 
 `--deep` applies to both `localvoice run` and `localvoice bench`; `--think` is a `run`-only flag.
 

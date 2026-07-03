@@ -13,6 +13,9 @@ class WhisperMlxEngine:
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         import mlx_whisper
 
-        assert sample_rate == 16000, "whisper path expects 16 kHz mono"
+        if sample_rate != 16000:
+            raise ValueError(f"whisper path expects 16 kHz mono audio, got {sample_rate} Hz")
         result = mlx_whisper.transcribe(audio, path_or_hf_repo=self._cfg.model)
+        if "text" not in result:
+            raise RuntimeError(f"unexpected mlx-whisper result shape: {sorted(result)}")
         return str(result["text"]).strip()

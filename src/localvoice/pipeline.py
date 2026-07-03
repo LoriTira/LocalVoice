@@ -88,6 +88,9 @@ def run_pipeline(
                 return
         deps.player.mark_end()
         if not spoke_anything:
+            # An empty reply must never commit an empty assistant turn: drop the
+            # pending turn before finishing so a later commit() is a no-op.
+            deps.transcript.abort_pending()
             emit(Event(EventType.RESPONSE_FINISHED))
     except Exception as exc:  # noqa: BLE001 — pipeline boundary
         if not cancel.is_set():

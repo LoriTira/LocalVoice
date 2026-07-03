@@ -111,5 +111,9 @@ def test_think_flag_reaches_llm_and_markup_is_stripped():
 
 
 def test_empty_llm_output_finishes_cleanly():
-    events = run(make_deps(llm=FakeLLM([])), speech())
+    t = Transcript("sys")
+    events = run(make_deps(llm=FakeLLM([]), transcript=t), speech())
     assert events[-1].type == E.RESPONSE_FINISHED
+    # pending was aborted, so a later commit must no-op and leave no turn behind
+    t.commit()
+    assert t.history() == []

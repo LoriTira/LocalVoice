@@ -1,4 +1,9 @@
 class Transcript:
+    # Thread safety: the pipeline thread calls begin_turn/add_clause while the
+    # orchestrator thread calls truncate_commit/commit/abort_pending. This is
+    # safe under the GIL with benign interleavings, but it is NOT lock-protected
+    # — do not add cross-thread iteration over the pending/committed lists
+    # without revisiting this.
     def __init__(self, system_prompt: str) -> None:
         self._system = system_prompt
         self._committed: list[dict] = []

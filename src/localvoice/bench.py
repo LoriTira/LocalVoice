@@ -83,5 +83,8 @@ def run_bench(cfg: Config, runs: int = 3) -> None:
             f"run {i + 1}: stt {rows[-1][0]:.2f}s | ttft {rows[-1][1]:.2f}s | "
             f"clause {rows[-1][2]:.2f}s | tts {rows[-1][3]:.2f}s | total {rows[-1][4]:.2f}s"
         )
+    if not rows:
+        print("no runs executed (check --runs)")
+        return
     best = min(rows, key=lambda r: r[-1])
     print(f"best voice-to-voice (excl. playback buffer): {best[-1]:.2f}s")
