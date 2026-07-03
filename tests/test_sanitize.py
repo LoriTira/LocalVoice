@@ -39,6 +39,7 @@ def test_plain_text_passes_through_unchanged():
         ("See [the docs](https://x.y) now", "See the docs now"),
         ("- item one\n- item two", "item one item two"),
         ("Inline `code` here", "Inline code here"),
+        ("call my_variable_name now", "call my variable name now"),
         ("Nice \U0001f600 day ✨", "Nice day"),
         ("  spaced   out  ", "spaced out"),
     ],
