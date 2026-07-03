@@ -38,7 +38,7 @@ Default model pinned to `mlx-community/Qwen3.6-35B-A3B-4bit` (verified available
 
 ## 3. System architecture
 
-One asyncio process. Blocking MLX work runs in worker threads; components communicate through queues; a per-response cancellation token makes every stage abortable between token/chunk boundaries.
+One process, plain threads + queues (amended from asyncio at planning: every workload is a blocking C/Metal call — MLX, PortAudio, Quartz — so an event loop adds bridging complexity without benefit). Main thread runs the state machine on an event queue; the hotkey listener and audio callbacks run on their own threads; each response runs in a pipeline worker thread; a per-response cancellation token plus a generation counter make every stage abortable and stale events ignorable.
 
 ```
 pynput key tap ──events──▶ Orchestrator (state machine)
