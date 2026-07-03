@@ -13,7 +13,7 @@ Spec: `docs/superpowers/specs/2026-07-03-localvoice-architecture-design.md` (rea
 ## Global Constraints
 
 - Platform: Apple Silicon macOS only. Python `>=3.12`.
-- Runtime deps exactly: `mlx-lm`, `mlx-whisper`, `mlx-audio`, `sounddevice`, `pynput`, `numpy`. Dev deps: `pytest`, `ruff`. No additions without a plan amendment.
+- Runtime deps exactly: `mlx-lm`, `mlx-whisper`, `mlx-audio`, `sounddevice`, `pynput`, `numpy`, `huggingface_hub` (used directly by `localvoice setup`). Dev deps: `pytest`, `ruff`. No additions without a plan amendment.
 - Default LLM (shipped config): `mlx-community/Qwen3.6-35B-A3B-4bit`. Bootstrap on this machine (gitignored `localvoice.local.toml`): local Qwen3.6-27B-MLX-6bit path, because the 35B is still downloading.
 - Audio: capture 16 kHz mono float32; playback 24 kHz mono float32.
 - PTT key `cmd_r`, stop key `esc`, debounce 120 ms — config-overridable.
@@ -49,6 +49,7 @@ dependencies = [
   "sounddevice>=0.5",
   "pynput>=1.8",
   "numpy>=1.26",
+  "huggingface_hub>=0.26",
 ]
 
 [project.scripts]
