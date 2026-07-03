@@ -31,7 +31,9 @@ class FakeLLM:
 
 
 class FakeTTS:
-    def __init__(self, chunk_len: int = 100, chunks_per_text: int = 2, delay_s: float = 0.0) -> None:
+    def __init__(
+        self, chunk_len: int = 100, chunks_per_text: int = 2, delay_s: float = 0.0
+    ) -> None:
         self.chunk_len = chunk_len
         self.chunks_per_text = chunks_per_text
         self.delay_s = delay_s

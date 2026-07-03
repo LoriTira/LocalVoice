@@ -20,7 +20,9 @@ class LlmConfig:
     deep_model: str = ""
     think: bool = False
     max_tokens: int = 1024
-    system_prompt: str = "You are a helpful voice assistant. Keep answers short and spoken-friendly."
+    system_prompt: str = (
+        "You are a helpful voice assistant. Keep answers short and spoken-friendly."
+    )
 
 
 @dataclass
@@ -53,7 +55,13 @@ class Config:
     audio: AudioConfig
 
 
-_SECTIONS = {"stt": SttConfig, "llm": LlmConfig, "tts": TtsConfig, "keys": KeysConfig, "audio": AudioConfig}
+_SECTIONS = {
+    "stt": SttConfig,
+    "llm": LlmConfig,
+    "tts": TtsConfig,
+    "keys": KeysConfig,
+    "audio": AudioConfig,
+}
 
 
 def _merge(base: dict, overlay: dict) -> dict:

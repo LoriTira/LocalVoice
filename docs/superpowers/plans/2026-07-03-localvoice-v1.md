@@ -75,7 +75,7 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = ["I", "E501"]
 ```
 
 If `uv sync` fails on a version floor (these are post-2025 packages moving fast), relax that floor to whatever uv resolves — do not pin exact versions; `uv.lock` (committed) is the pin.
