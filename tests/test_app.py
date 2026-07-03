@@ -103,3 +103,17 @@ def test_esc_during_speaking_cancels_to_idle():
     orch.handle(Event(E.FIRST_AUDIO, gen=orch._gen))
     orch.handle(Event(E.ESC))
     assert orch.state is S.IDLE and ("flush",) in player.log
+
+
+def test_on_state_callback_receives_transitions():
+    seen: list = []
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"),
+        llm=FakeLLM(["Hello there."]), tts=FakeTTS(), transcript=transcript,
+        keys_cfg=KeysConfig(), status=lambda s: None, on_state=seen.append,
+    )
+    orch.handle(Event(E.PTT_DOWN))
+    assert seen[-1] is S.LISTENING
+    orch.handle(Event(E.ESC))
+    assert seen[-1] is S.IDLE

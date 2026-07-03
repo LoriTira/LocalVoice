@@ -29,6 +29,7 @@ class Orchestrator:
         inference: ThreadPoolExecutor | None = None,
         think: bool = False,
         status: Callable[[str], None] = print,
+        on_state: Callable[[S], None] | None = None,
     ) -> None:
         self.state = S.IDLE
         self._capture = capture
@@ -36,6 +37,7 @@ class Orchestrator:
         self._transcript = transcript
         self._keys = keys_cfg
         self._status = status
+        self._on_state = on_state
         self._deps = PipelineDeps(
             stt=stt, llm=llm, tts=tts, player=player, transcript=transcript, think=think,
             on_user_text=lambda t: status(f"you: {t}"),
@@ -118,3 +120,5 @@ class Orchestrator:
             S.SPEAKING: "speaking... (hold key to interrupt)",
         }
         self._status(f"[{labels[self.state]}]")
+        if self._on_state is not None:
+            self._on_state(self.state)
