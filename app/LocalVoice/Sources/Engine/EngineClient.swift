@@ -31,13 +31,18 @@ actor EngineClient {
     /// `send()`s even if a stray exit notification arrives afterward.
     private var isStopping = false
 
+    /// True once `continuation.finish()` has been called — guards against a
+    /// double-finish (e.g. `stop()` racing a final no-respawn death).
+    private var didFinishStream = false
+
     /// Count of stdout lines that failed `EngineEvent.decode` — exposed for
     /// tests; not surfaced on the event stream since a garbled line isn't
     /// actionable by the UI.
     private(set) var droppedLines = 0
 
-    /// Reset to 0 on every successful spawn; drives the respawn backoff
-    /// schedule (1, 2, 4, 8, 8, … seconds).
+    /// Reset to 0 when the engine reports ready (a healthy boot); fast-flapping
+    /// processes that die before ready keep escalating. Drives the respawn
+    /// backoff schedule (1, 2, 4, 8, 8, … seconds).
     private var respawnAttempt = 0
 
     /// Buffers a stdout chunk that hasn't yet seen a trailing newline —
@@ -57,6 +62,14 @@ actor EngineClient {
     func start() {
         isStopping = false
         spawn()
+    }
+
+    /// Finishes `events`, guarded so a second call (e.g. `stop()` racing a
+    /// final no-respawn death) is a no-op.
+    private func finishStream() {
+        guard !didFinishStream else { return }
+        didFinishStream = true
+        continuation.finish()
     }
 
     /// Writes `command`'s encoded line + newline to the child's stdin.
@@ -80,6 +93,7 @@ actor EngineClient {
         guard let process, process.isRunning else {
             self.process = nil
             stdinHandle = nil
+            finishStream()
             return
         }
 
@@ -95,6 +109,7 @@ actor EngineClient {
 
         self.process = nil
         stdinHandle = nil
+        finishStream()
     }
 
     // MARK: - Process lifecycle
@@ -171,6 +186,9 @@ actor EngineClient {
 
             guard let line = String(data: lineData, encoding: .utf8), !line.isEmpty else { continue }
             if let event = EngineEvent.decode(line: line) {
+                if case .ready = event {
+                    respawnAttempt = 0
+                }
                 continuation.yield(.engine(event))
             } else {
                 droppedLines += 1
@@ -198,7 +216,10 @@ actor EngineClient {
     }
 
     private func scheduleRespawnIfNeeded() {
-        guard autoRespawn, !isStopping else { return }
+        guard autoRespawn, !isStopping else {
+            finishStream()
+            return
+        }
 
         respawnAttempt += 1
         let delay = Self.backoffDelay(forAttempt: respawnAttempt)

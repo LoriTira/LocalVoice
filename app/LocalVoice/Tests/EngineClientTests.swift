@@ -74,6 +74,40 @@ final class EngineClientTests: XCTestCase {
         }
     }
 
+    /// Collects events from `client.events` until `stopCount` events matching
+    /// `predicate` have arrived (inclusive of that last matching event) or
+    /// `timeout` elapses, whichever comes first. Used for scenarios that need
+    /// to run past an unbounded number of intervening events (e.g. `.spawned`
+    /// / `.exited` pairs) to reach the Nth occurrence of a specific event.
+    private func collectEvents(
+        from client: EngineClient,
+        untilMatching predicate: @escaping @Sendable (ClientEvent) -> Bool,
+        stopCount: Int,
+        timeout: TimeInterval = 5
+    ) async -> [ClientEvent] {
+        await withTaskGroup(of: [ClientEvent].self) { group in
+            group.addTask {
+                var collected: [ClientEvent] = []
+                var matches = 0
+                for await event in await client.events {
+                    collected.append(event)
+                    if predicate(event) {
+                        matches += 1
+                        if matches >= stopCount { break }
+                    }
+                }
+                return collected
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return []
+            }
+            let result = await group.next() ?? []
+            group.cancelAll()
+            return result
+        }
+    }
+
     func testStartupYieldsSpawnedReadyEnginesReadyInOrder() async throws {
         let client = makeClient()
         addTeardownBlock { await client.stop() }
@@ -152,6 +186,93 @@ final class EngineClientTests: XCTestCase {
             .exited(code: 0),
             .respawning(attempt: 1, delaySeconds: 1),
         ])
+    }
+
+    /// `/usr/bin/true` exits immediately every time and never emits a
+    /// `ready` engine event, so `respawnAttempt` has no reset point — each
+    /// respawn must escalate the backoff attempt count with no resets.
+    func testRespawnAttemptEscalatesWithoutReadyToResetIt() async throws {
+        let client = EngineClient(
+            mode: .custom(executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: []),
+            autoRespawn: true
+        )
+        addTeardownBlock { await client.stop() }
+        await client.start()
+
+        let events = await collectEvents(
+            from: client,
+            untilMatching: { if case .respawning = $0 { return true } else { return false } },
+            stopCount: 2,
+            timeout: 10
+        )
+        let respawningEvents = events.compactMap { event -> Int? in
+            if case let .respawning(attempt, _) = event { return attempt }
+            return nil
+        }
+        XCTAssertEqual(respawningEvents, [1, 2], "expected escalating attempts 1 then 2 with no ready to reset them, got \(events)")
+    }
+
+    /// A healthy boot (fixture reaches `ready`) must reset `respawnAttempt`
+    /// to 0, so the very next crash-and-respawn reports attempt 1 again —
+    /// not a continuation of whatever attempt count preceded the healthy
+    /// boot. Triggered by sending a command whose encoded line contains
+    /// "die", which the fixture matches before its echo catch-all and exits
+    /// 7 without any respawn-suppressing shutdown handshake.
+    func testRespawnAttemptResetsAfterReady() async throws {
+        let client = makeClient()
+        addTeardownBlock { await client.stop() }
+        await client.start()
+
+        // Drain startup (.spawned, .engine(.ready), .engine(.enginesReady))
+        // and confirm ready was actually observed before proceeding.
+        let startup = await collectEvents(from: client, count: 3)
+        let sawReady = startup.contains { if case .engine(.ready) = $0 { return true } else { return false } }
+        XCTAssertTrue(sawReady, "expected startup to include .engine(.ready), got \(startup)")
+
+        await client.send(.downloadModel(repo: "die"))
+
+        // Bounded at the first .respawning: the respawned fixture emits
+        // ready again on its own, so collecting further would race that.
+        let events = await collectEvents(
+            from: client,
+            untilMatching: { if case .respawning = $0 { return true } else { return false } },
+            stopCount: 1,
+            timeout: 10
+        )
+        try XCTAssertEqualSequence(events, [
+            .exited(code: 7),
+            .respawning(attempt: 1, delaySeconds: 1),
+        ])
+    }
+
+    /// `stop()` must finish the `events` continuation so a `for await`
+    /// consumer's loop actually exits instead of hanging forever waiting for
+    /// a next element that will never come.
+    func testStopFinishesEventStream() async throws {
+        let client = makeClient()
+        await client.start()
+        _ = await collectEvents(from: client, count: 3) // drain startup, confirms ready
+
+        await client.stop()
+
+        let loopExited = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in await client.events {
+                    // Drain whatever trails stop() (e.g. a racy `state: idle`
+                    // line) — the assertion is that this loop ends on its
+                    // own, not what's inside it.
+                }
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+        XCTAssertTrue(loopExited, "for await over client.events must exit after stop() finishes the continuation")
     }
 }
 
