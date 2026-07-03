@@ -22,7 +22,7 @@
 
 ---
 
-### Task B1: Project scaffold (XcodeGen)
+### Task 1: Project scaffold (XcodeGen)
 
 **Files:**
 - Create: `app/LocalVoice/project.yml`, `app/LocalVoice/Sources/LocalVoiceApp.swift`, `app/LocalVoice/Sources/Info.plist`, `app/LocalVoice/Tests/SmokeTests.swift`
@@ -117,7 +117,7 @@ DerivedData/
 
 ---
 
-### Task B2: Protocol types (Codable contracts)
+### Task 2: Protocol types (Codable contracts)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Protocol/EngineEvent.swift`, `app/LocalVoice/Sources/Protocol/EngineCommand.swift`, `app/LocalVoice/Sources/Protocol/JSONValue.swift`
@@ -229,7 +229,7 @@ final class ProtocolTests: XCTestCase {
 
 ---
 
-### Task B3: EngineClient actor
+### Task 3: EngineClient actor
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Engine/EngineClient.swift`, `app/LocalVoice/Sources/Engine/LaunchMode.swift`
@@ -288,7 +288,7 @@ done
 
 ---
 
-### Task B4: AppState reducer
+### Task 4: AppState reducer
 
 **Files:**
 - Create: `app/LocalVoice/Sources/State/AppState.swift`
@@ -335,7 +335,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B5: App shell + Talk view (behavior contract)
+### Task 5: App shell + Talk view (behavior contract)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/MainWindow.swift`, `app/LocalVoice/Sources/Views/TalkView.swift`, `app/LocalVoice/Sources/Views/StatusBanner.swift`
@@ -351,7 +351,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B6: Settings view (derived form)
+### Task 6: Settings view (derived form)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/SettingsView.swift`, `app/LocalVoice/Sources/Views/SettingRow.swift`
@@ -366,7 +366,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B7: Models + Setup views
+### Task 7: Models + Setup views
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/ModelsView.swift`, `app/LocalVoice/Sources/Views/SetupView.swift`
@@ -381,7 +381,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B8: HotkeyMonitor (global right-command PTT)
+### Task 8: HotkeyMonitor (global right-command PTT)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Engine/HotkeyMonitor.swift`
@@ -396,7 +396,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B9: CI + docs + phase acceptance
+### Task 9: CI + docs + phase acceptance
 
 **Files:**
 - Modify: `.github/workflows/ci.yml` (add swift job), `README.md` (GUI section), `docs/gui.md` (app architecture section)
