@@ -39,3 +39,20 @@ def test_end_to_end_with_real_models():
     assert E.FIRST_AUDIO in types and E.PIPELINE_ERROR not in types
     assert any(entry[0] == "submit" for entry in player.log)
     assert ("mark_end",) in player.log
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not TINY_LLM.exists(), reason="tiny local LLM not present")
+def test_two_turn_conversation_reuses_engine():
+    from localvoice.llm.mlx_lm_engine import MlxLmEngine
+
+    llm = MlxLmEngine(LlmConfig(model=str(TINY_LLM), max_tokens=40))
+    llm.load()
+    system = {"role": "system", "content": "Answer in one short sentence."}
+    user1 = {"role": "user", "content": "What color is the sky on a clear day?"}
+    reply1 = "".join(llm.stream([system, user1], think=False))
+    assert reply1.strip()
+    assistant1 = {"role": "assistant", "content": "Blue."}
+    user2 = {"role": "user", "content": "And at night?"}
+    reply2 = "".join(llm.stream([system, user1, assistant1, user2], think=False))
+    assert reply2.strip()
