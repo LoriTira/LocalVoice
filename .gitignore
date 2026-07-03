@@ -7,3 +7,4 @@ dist/
 .DS_Store
 localvoice.local.toml
 .claude/
+.superpowers/
