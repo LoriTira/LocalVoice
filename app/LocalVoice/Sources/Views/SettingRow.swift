@@ -19,22 +19,38 @@ import SwiftUI
 ///
 /// Returns `nil` on parse failure so the caller can show an inline error
 /// and send nothing — a bad value never reaches `setConfig`.
+///
+/// The draft is trimmed of leading/trailing whitespace (including
+/// newlines, relevant for the `llm.system_prompt` `TextEditor`) before any
+/// per-type parsing — stray whitespace from a paste or a multi-line editor
+/// selection shouldn't turn an otherwise-valid `"  5  "` into a parse
+/// failure. The one case this changes on purpose: a draft that's *entirely*
+/// whitespace trims to `""`, which keeps each type's existing empty-string
+/// semantics exactly — still a parse failure for bool/int/float, still a
+/// valid `.string("")` for str (see the `str` case below and its doc
+/// comment above for why empty is meaningful there).
 func jsonValue(fromDraft draft: String, type: String) -> JSONValue? {
+    let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     switch type {
     case "bool":
-        switch draft {
+        switch trimmed {
         case "true": return .bool(true)
         case "false": return .bool(false)
         default: return nil
         }
     case "int":
-        guard let value = Int(draft) else { return nil }
+        guard let value = Int(trimmed) else { return nil }
         return .int(value)
     case "float":
-        guard let value = Double(draft) else { return nil }
+        // `Double.init?(String)` parses "inf"/"infinity"/"nan" (case
+        // insensitively) into non-finite values — none of which are valid
+        // TOML/JSON config scalars the engine's `coerce` would accept, so
+        // reject them here rather than sending a value that can't survive
+        // the wire round-trip.
+        guard let value = Double(trimmed), value.isFinite else { return nil }
         return .double(value)
     case "str":
-        return .string(draft)
+        return .string(trimmed)
     default:
         // Defensive: docs/gui.md only ever emits the four types above.
         return nil
@@ -81,6 +97,19 @@ struct SettingRow: View {
 
     @State private var draft: String = ""
     @FocusState private var isFocused: Bool
+
+    /// Typed drafts for the `number` widget's `int`/`float` fields (B6
+    /// review item 1) — kept alongside the generic string `draft` rather
+    /// than replacing it, since `draft` is still what seeds/clears
+    /// `parseFailed`'s message and every other widget kind still owns it.
+    /// Only one of `intDraft`/`doubleDraft` is ever live for a given row,
+    /// picked by `field.type` in `numberWidget`; the other just sits at its
+    /// zero value, unused. Seeded in `.onAppear` and reconciled in
+    /// `.onChange(of: appState.config)` exactly like `draft` is, just
+    /// through `format: .number`'s own `Int`/`Double` binding instead of a
+    /// string round-trip.
+    @State private var intDraft: Int = 0
+    @State private var doubleDraft: Double = 0
 
     /// The exact value most recently sent to `setConfig`, kept until
     /// `appState.config` reflects it (a fresh `configApplied`) — the
@@ -130,9 +159,7 @@ struct SettingRow: View {
         }
         .onAppear {
             draft = draftString(from: liveValue)
-            if field.widget == "model_picker" {
-                Task { await client.send(.listModels) }
-            }
+            seedTypedDrafts(from: liveValue)
         }
         .onChange(of: appState.config) {
             // A fresh configApplied landed. If it carries the value we're
@@ -145,10 +172,29 @@ struct SettingRow: View {
             let current = liveValue
             if current == pending {
                 pendingValue = nil
-            } else if current != jsonValue(fromDraft: draft, type: field.type) {
+            } else if current != typedDraftValue {
                 pendingValue = nil
                 draft = draftString(from: current)
+                seedTypedDrafts(from: current)
             }
+        }
+    }
+
+    /// What the row's current draft would currently commit as a
+    /// `JSONValue`, for the `.onChange(of: appState.config)` reconciliation
+    /// above — `numberWidget` rows (the only ones with live
+    /// `intDraft`/`doubleDraft` state, per the doc comment on those
+    /// properties) read the typed drafts directly; every other widget kind
+    /// falls back to the existing `jsonValue(fromDraft: draft, type:
+    /// field.type)` string-parse path unchanged.
+    private var typedDraftValue: JSONValue {
+        guard field.widget == "number" else {
+            return jsonValue(fromDraft: draft, type: field.type) ?? .null
+        }
+        switch field.type {
+        case "int": return .int(intDraft)
+        case "float": return .double(doubleDraft)
+        default: return jsonValue(fromDraft: draft, type: field.type) ?? .null
         }
     }
 
@@ -188,17 +234,62 @@ struct SettingRow: View {
         ))
     }
 
+    /// B6 review item 1: `type`-constrained numeric entry rather than a
+    /// free-text field. `schema.py::_DEFAULT_WIDGETS` only ever pairs the
+    /// `number` widget with `int`/`float` (see the doc comment above
+    /// `intDraft`), so this switch is exhaustive for every field this build
+    /// actually renders; the `str`/`bool` arms exist purely as a defensive
+    /// fallback to the old free-text behavior rather than dropping the row,
+    /// matching how the outer `widget` dispatch treats an unrecognized
+    /// `field.widget`.
+    ///
+    /// Each typed `TextField` uses SwiftUI's `format:`-backed `value:`
+    /// binding, which itself rejects/reverts non-numeric keystrokes at
+    /// entry time — there is no way to type a draft this can fail to
+    /// parse, so unlike every other widget's `commit()` call this goes
+    /// straight to `commitTyped` with an already-valid `JSONValue`, no
+    /// `jsonValue(fromDraft:type:)` round-trip needed.
+    @ViewBuilder
     private var numberWidget: some View {
         LabeledContent(field.label) {
-            TextField(field.label, text: $draft)
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 160)
-                .focused($isFocused)
-                .onSubmit { commit() }
-                .onChange(of: isFocused) { wasFocused, nowFocused in
-                    if wasFocused, !nowFocused { commit() }
-                }
+            switch field.type {
+            case "int":
+                TextField(field.label, value: $intDraft, format: .number.grouping(.never))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                    .focused($isFocused)
+                    .onSubmit { commitTyped(.int(intDraft)) }
+                    .onChange(of: isFocused) { wasFocused, nowFocused in
+                        if wasFocused, !nowFocused { commitTyped(.int(intDraft)) }
+                    }
+            case "float":
+                TextField(
+                    field.label, value: $doubleDraft,
+                    format: .number.grouping(.never).precision(.fractionLength(0...3))
+                )
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                    .focused($isFocused)
+                    .onSubmit { commitTyped(.double(doubleDraft)) }
+                    .onChange(of: isFocused) { wasFocused, nowFocused in
+                        if wasFocused, !nowFocused { commitTyped(.double(doubleDraft)) }
+                    }
+            default:
+                // Defensive: no schema field pairs `widget: "number"` with
+                // a type other than int/float, but fail open to the old
+                // free-text behavior rather than rendering nothing.
+                TextField(field.label, text: $draft)
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                    .focused($isFocused)
+                    .onSubmit { commit() }
+                    .onChange(of: isFocused) { wasFocused, nowFocused in
+                        if wasFocused, !nowFocused { commit() }
+                    }
+            }
         }
     }
 
@@ -360,6 +451,18 @@ struct SettingRow: View {
         Task { await client.send(.setConfig([field.key: value])) }
     }
 
+    /// `numberWidget`'s int/float commit path (B6 review item 1): `value`
+    /// comes straight from a `format:`-backed `TextField` binding, which
+    /// cannot hold anything `jsonValue(fromDraft:type:)` would reject — so
+    /// unlike `commit()` there's no parse step and no `parseFailed` branch
+    /// to reach. Otherwise identical bookkeeping to `commit()`: mark
+    /// pending, send the one-key `setConfig`.
+    private func commitTyped(_ value: JSONValue) {
+        parseFailed = false
+        pendingValue = value
+        Task { await client.send(.setConfig([field.key: value])) }
+    }
+
     // MARK: - Live value lookup
 
     /// Digs `field.key`'s current value out of `appState.config`'s nested
@@ -378,5 +481,40 @@ struct SettingRow: View {
               let value = section[parts[1]]
         else { return field.default }
         return value
+    }
+
+    /// Seeds `intDraft`/`doubleDraft` from `value` for `numberWidget` (B6
+    /// review item 1) — the typed-field counterpart to `draftString(from:)`
+    /// above. A no-op for every widget other than `number` since those
+    /// rows never read the typed drafts at all. `value` is whatever the
+    /// caller already resolved as "current" (`liveValue` on first appear,
+    /// or a fresh `configApplied`'s value on reconciliation) — this only
+    /// handles pulling a numeric payload back out of it.
+    ///
+    /// `Int`/`Double` extraction tolerates the value arriving in the
+    /// "other" numeric `JSONValue` case (e.g. `.double` for an `int`-typed
+    /// field) defensively, matching `sliderWidget`'s existing
+    /// `Double(draft) ?? minimum` fallback style — `JSONValue`'s own
+    /// decoder tries `Int` before `Double`, so this shouldn't happen for
+    /// values that actually came off the wire, but a field's `.default`
+    /// (Swift-literal-constructed, not decoded) has no such guarantee.
+    private func seedTypedDrafts(from value: JSONValue) {
+        guard field.widget == "number" else { return }
+        switch field.type {
+        case "int":
+            switch value {
+            case .int(let i): intDraft = i
+            case .double(let d): intDraft = Int(d)
+            default: break
+            }
+        case "float":
+            switch value {
+            case .double(let d): doubleDraft = d
+            case .int(let i): doubleDraft = Double(i)
+            default: break
+            }
+        default:
+            break
+        }
     }
 }

@@ -25,6 +25,15 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // B6 review item 3: fetch the model list once per Settings
+            // appearance here, not per `model_picker` row — this view has
+            // three such rows (`stt.model`, `llm.model`, `llm.deep_model`),
+            // and a per-row `.onAppear` trigger sends `listModels` three
+            // times on first render plus again on every re-appear a scroll
+            // can cause. `SettingRow` no longer sends it at all.
+            Task { await client.send(.listModels) }
+        }
     }
 
     /// Section names in first-seen order from `appState.schema` — the

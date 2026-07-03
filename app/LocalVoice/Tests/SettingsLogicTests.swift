@@ -77,4 +77,34 @@ final class SettingsLogicTests: XCTestCase {
     func testUnknownTypeFailsToParse() {
         XCTAssertNil(jsonValue(fromDraft: "anything", type: "enum"))
     }
+
+    // MARK: - whitespace trimming (B6 review)
+
+    /// Leading/trailing whitespace around an otherwise-valid int draft
+    /// (e.g. from a paste) must not turn it into a parse failure.
+    func testIntDraftWithSurroundingWhitespaceTrimsAndParses() {
+        XCTAssertEqual(jsonValue(fromDraft: "  5  ", type: "int"), .int(5))
+    }
+
+    /// Same trimming behavior for bool, including the case-sensitive-off
+    /// wire values (`coerce`'s `"true"/"false"` match).
+    func testBoolDraftWithSurroundingWhitespaceTrimsAndParses() {
+        XCTAssertEqual(jsonValue(fromDraft: " true ", type: "bool"), .bool(true))
+    }
+
+    /// `Double.init?(String)` happily parses "inf"/"nan" into non-finite
+    /// values — neither is a value the engine's TOML/JSON-backed config can
+    /// actually hold, so both must be rejected rather than sent.
+    func testFloatDraftOfInfOrNanFailsToParse() {
+        XCTAssertNil(jsonValue(fromDraft: "inf", type: "float"))
+        XCTAssertNil(jsonValue(fromDraft: "nan", type: "float"))
+    }
+
+    /// A draft that's entirely whitespace trims to "" — documenting the
+    /// exact current intent: this is *still* a meaningful, valid "unset"
+    /// value for str (matching `testStrDraftAllowsEmptyString`'s untrimmed
+    /// empty-string case), not a new parse failure introduced by trimming.
+    func testStrDraftOfOnlyWhitespaceTrimsToEmptyStringPassthrough() {
+        XCTAssertEqual(jsonValue(fromDraft: "  ", type: "str"), .string(""))
+    }
 }
