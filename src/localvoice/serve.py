@@ -43,6 +43,8 @@ class Serve:
         self._engines_ready = False
         self._exit = os._exit
         self._level_last = 0.0
+        self._state_cv = threading.Condition()
+        self._last_state = None
 
         from localvoice.app import Orchestrator
         from localvoice.transcript import Transcript
@@ -68,7 +70,7 @@ class Serve:
             inference=self._inference,
             think=cfg.llm.think,
             status=lambda s: None,
-            on_state=lambda st: self.emit({"event": "state", "state": st.name.lower()}),
+            on_state=self._on_state,
         )
         d = self._orch._deps
         d.on_user_text = lambda t: self.emit({"event": "user_text", "text": t})
@@ -78,6 +80,12 @@ class Serve:
 
     def _on_drained(self) -> None:
         self._orch.post(Event(EventType.RESPONSE_FINISHED, gen=self._orch._gen))
+
+    def _on_state(self, st) -> None:
+        with self._state_cv:
+            self._last_state = st
+            self._state_cv.notify_all()
+        self.emit({"event": "state", "state": st.name.lower()})
 
     def _on_level(self, rms: float) -> None:
         import time
@@ -276,8 +284,18 @@ class Serve:
                 np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32)
                 / 32768.0
             )
+        from localvoice.events import State
+
         self._orch.post(Event(EventType.PTT_DOWN))
-        self._capture.buffer.write(audio) if hasattr(self._capture, "buffer") else None
+        with self._state_cv:
+            armed = self._state_cv.wait_for(
+                lambda: self._last_state is State.LISTENING, timeout=2.0
+            )
+        if not armed:
+            self.emit({"event": "error", "message": "inject_audio: capture never armed"})
+            return
+        if hasattr(self._capture, "buffer"):
+            self._capture.buffer.write(audio)
         self._orch.post(Event(EventType.PTT_UP, held_ms=int(len(audio) / 16)))
 
     def _shutdown(self) -> None:

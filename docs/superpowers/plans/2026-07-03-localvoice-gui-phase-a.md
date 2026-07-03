@@ -968,6 +968,8 @@ class Serve:
         self._engines_ready = False
         self._exit = os._exit
         self._level_last = 0.0
+        self._state_cv = threading.Condition()
+        self._last_state = None
 
         from localvoice.app import Orchestrator
         from localvoice.transcript import Transcript
@@ -993,7 +995,7 @@ class Serve:
             inference=self._inference,
             think=cfg.llm.think,
             status=lambda s: None,
-            on_state=lambda st: self.emit({"event": "state", "state": st.name.lower()}),
+            on_state=self._on_state,
         )
         d = self._orch._deps
         d.on_user_text = lambda t: self.emit({"event": "user_text", "text": t})
@@ -1003,6 +1005,12 @@ class Serve:
 
     def _on_drained(self) -> None:
         self._orch.post(Event(EventType.RESPONSE_FINISHED, gen=self._orch._gen))
+
+    def _on_state(self, st) -> None:
+        with self._state_cv:
+            self._last_state = st
+            self._state_cv.notify_all()
+        self.emit({"event": "state", "state": st.name.lower()})
 
     def _on_level(self, rms: float) -> None:
         import time
@@ -1201,8 +1209,18 @@ class Serve:
                 np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32)
                 / 32768.0
             )
+        from localvoice.events import State
+
         self._orch.post(Event(EventType.PTT_DOWN))
-        self._capture.buffer.write(audio) if hasattr(self._capture, "buffer") else None
+        with self._state_cv:
+            armed = self._state_cv.wait_for(
+                lambda: self._last_state is State.LISTENING, timeout=2.0
+            )
+        if not armed:
+            self.emit({"event": "error", "message": "inject_audio: capture never armed"})
+            return
+        if hasattr(self._capture, "buffer"):
+            self._capture.buffer.write(audio)
         self._orch.post(Event(EventType.PTT_UP, held_ms=int(len(audio) / 16)))
 
     def _shutdown(self) -> None:
@@ -1223,6 +1241,7 @@ Implementation notes for the engineer:
 - `test_ptt_turn...` relies on `InstantExecutor` running `run_pipeline` synchronously inside `orch.handle`; the orchestrator loop thread plus `time.sleep(0.3)` in the helper absorbs ordering.
 - `MicCapture` gains the `on_level` pass-through in Task 2; `Orchestrator(on_state=...)` comes from Task 3.
 - Shutdown drains FIFO via a SHUTDOWN sentinel in the orchestrator queue; serve joins the loop thread before cleanup.
+- **Post-review fix (Task 9 pre-step):** the `_inject` shown above races `capture.arm()` — `PTT_DOWN` is only *posted* here, but arming happens later on the orchestrator loop thread, so a write immediately after `post()` usually lands before the gated buffer is armed and gets silently dropped (flaky/failing e2e). Fixed by adding `self._state_cv`/`self._last_state` in `__init__`, routing `on_state` through a `_on_state` method that records the state and notifies the condition variable, and having `_inject` `wait_for(lambda: self._last_state is State.LISTENING, timeout=2.0)` after posting `PTT_DOWN` and before writing into `self._capture.buffer`. This is safe because `Orchestrator.handle` runs actions (including `capture.arm()` for `START_CAPTURE`) before `_show_state` fires `on_state`, so observing `LISTENING` is a reliable "armed" signal. Regression-guarded by `tests/test_serve.py::test_inject_audio_waits_for_arm_before_writing` using a `GatedFakeCapture` whose buffer only records writes while `armed` is true.
 
 - [ ] **Step 4: Gates** — full suite; expect prior 106 + new.
 - [ ] **Step 5: Commit** — `feat: serve protocol core with command dispatch and config hot-apply`

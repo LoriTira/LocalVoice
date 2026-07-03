@@ -33,6 +33,30 @@ class FakeCapture:
         self.armed = False
 
 
+class GatedFakeCapture(FakeCapture):
+    def __init__(self):
+        super().__init__()
+
+        class _Buf:
+            def __init__(self, outer):
+                self.outer = outer
+                self.written = []
+
+            def write(self, audio):
+                if self.outer.armed:
+                    self.written.append(audio)
+
+        self.buffer = _Buf(self)
+
+    def disarm(self):
+        import numpy as np
+
+        self.armed = False
+        if self.buffer.written:
+            return np.concatenate(self.buffer.written).astype("float32")
+        return np.zeros(0, np.float32)
+
+
 class InstantExecutor:
     def submit(self, fn, *a, **k):
         class F:
@@ -51,7 +75,7 @@ class InstantExecutor:
         pass
 
 
-def build(tmp_path: Path, commands: list[dict]) -> list[dict]:
+def build(tmp_path: Path, commands: list[dict], capture=None) -> list[dict]:
     cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
@@ -65,7 +89,8 @@ def build(tmp_path: Path, commands: list[dict]) -> list[dict]:
     stdout = io.StringIO()
     s = Serve(
         config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
-        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        engine_set=es, player=FakePlayer(),
+        capture=capture if capture is not None else FakeCapture(),
         inference=InstantExecutor(),
     )
     s._exit = lambda code: None
@@ -138,3 +163,27 @@ def test_bad_config_value_yields_error_event(tmp_path):
 def test_unknown_command_yields_error(tmp_path):
     msgs = build(tmp_path, [{"cmd": "dance"}, {"cmd": "shutdown"}])
     assert any("dance" in m["message"] for m in events_of(msgs, "error"))
+
+
+def test_inject_audio_waits_for_arm_before_writing(tmp_path):
+    """Regression guard for the arm/write race (Task 8 review finding):
+    _inject must not write into the capture buffer before the orchestrator
+    loop thread has actually armed it, or the frames get silently dropped."""
+    import wave
+
+    import numpy as np
+
+    wav = tmp_path / "inject.wav"
+    rng = np.random.default_rng(0)
+    audio = (0.1 * rng.standard_normal(16000)).astype("float32")
+    with wave.open(str(wav), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((audio * 32767).astype("int16").tobytes())
+    msgs = build(
+        tmp_path,
+        [{"cmd": "inject_audio", "path": str(wav)}, {"cmd": "shutdown"}],
+        capture=GatedFakeCapture(),
+    )
+    assert events_of(msgs, "user_text")
