@@ -1,4 +1,5 @@
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -125,3 +126,59 @@ def test_pipeline_on_dedicated_inference_thread():
     )
     assert proc.returncode == 0, f"subprocess failed:\n{proc.stdout}\n{proc.stderr}"
     assert "inference-thread pipeline OK" in proc.stdout
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not TINY_LLM.exists(), reason="tiny local LLM not present")
+def test_serve_protocol_end_to_end(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    from localvoice.bench import _speech_fixture
+
+    wav = tmp_path / "q.wav"
+    import wave
+
+    audio = _speech_fixture()
+    with wave.open(str(wav), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((audio * 32767).astype("int16").tobytes())
+    cfg = tmp_path / "localvoice.toml"
+    cfg.write_text(
+        f'[stt]\nmodel = "mlx-community/whisper-tiny"\n'
+        f'[llm]\nmodel = "{TINY_LLM}"\nmax_tokens = 60\n'
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "localvoice", "serve", "--config", str(cfg), "--allow-inject"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    events = []
+    try:
+        deadline = time.time() + 300
+        injected = False
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            ev = json.loads(line)
+            events.append(ev.get("event"))
+            if ev.get("event") == "engines_ready" and not injected:
+                injected = True
+                proc.stdin.write(json.dumps({"cmd": "inject_audio", "path": str(wav)}) + "\n")
+                proc.stdin.flush()
+            if ev.get("event") == "turn_done":
+                break
+        assert "ready" in events and "engines_ready" in events
+        assert "user_text" in events and "assistant_clause" in events
+        assert "turn_done" in events
+    finally:
+        try:
+            proc.stdin.write(json.dumps({"cmd": "shutdown"}) + "\n")
+            proc.stdin.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        proc.wait(timeout=10)

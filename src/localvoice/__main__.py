@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--deep", action="store_true")
     bench.add_argument("--model", default=None, help="override [llm].model (HF repo id or path)")
     bench.add_argument("--runs", type=int, default=3)
+
+    serve = sub.add_parser("serve", help="GUI/automation protocol mode (JSON lines on stdio)")
+    serve.add_argument("--config", default="localvoice.toml")
+    serve.add_argument("--allow-inject", action="store_true", help="enable inject_audio (tests)")
     return parser
 
 
@@ -220,7 +224,15 @@ def cmd_bench(args) -> None:
     run_bench(cfg, runs=args.runs)
 
 
-_COMMANDS = {"run", "setup", "bench"}
+def cmd_serve(args) -> None:
+    cfg = _load_config(args)
+    _defuse_tqdm_mp_lock()
+    from localvoice.serve import Serve
+
+    Serve(Path(args.config), cfg, allow_inject=args.allow_inject).run()
+
+
+_COMMANDS = {"run", "setup", "bench", "serve"}
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -242,7 +254,9 @@ def parse_cli(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_cli()
-    {"run": cmd_run, "setup": cmd_setup, "bench": cmd_bench}[args.command](args)
+    {"run": cmd_run, "setup": cmd_setup, "bench": cmd_bench, "serve": cmd_serve}[args.command](
+        args
+    )
 
 
 if __name__ == "__main__":

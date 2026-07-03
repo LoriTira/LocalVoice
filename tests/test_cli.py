@@ -33,3 +33,9 @@ def test_bare_flags_route_to_run_subcommand():
     assert parse_cli([]).command == "run"
     assert parse_cli(["bench", "--runs", "5"]).runs == 5
     assert parse_cli(["setup"]).command == "setup"
+
+
+def test_serve_parses():
+    args = build_parser().parse_args(["serve", "--allow-inject"])
+    assert args.command == "serve" and args.allow_inject is True
+    assert build_parser().parse_args(["serve"]).allow_inject is False
