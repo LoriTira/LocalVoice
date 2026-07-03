@@ -454,7 +454,7 @@ Run `uv add "tomli-w>=1.0"` (updates pyproject + lock).
 ```python
 import pytest
 
-from localvoice.engineset import EngineProxy, EngineSet, plan_apply
+from localvoice.engineset import EngineSet, plan_apply
 
 
 def test_plan_apply_routes_per_spec():

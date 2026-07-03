@@ -1,6 +1,6 @@
 import pytest
 
-from localvoice.engineset import EngineProxy, EngineSet, plan_apply
+from localvoice.engineset import EngineSet, plan_apply
 
 
 def test_plan_apply_routes_per_spec():
