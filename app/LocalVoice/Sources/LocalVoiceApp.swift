@@ -1,6 +1,43 @@
 import SwiftUI
 import os
 
+/// Bridges AppKit's app-termination lifecycle so quitting the app explicitly
+/// stops the engine subprocess rather than relying solely on the stdin-EOF
+/// backstop (`serve.py`'s "pipe closed with no explicit shutdown" path,
+/// phase-A behavior that stays in place as a fallback for e.g. a crash or a
+/// SIGKILL of the app itself).
+///
+/// `EngineClient.stop()` is `async` (it sends the protocol `shutdown`
+/// command, waits up to 3s, then SIGKILLs if needed — see that type), but
+/// `NSApplicationDelegate.applicationShouldTerminate(_:)` is synchronous and
+/// expects an immediate `NSApplication.TerminateReply`. The standard bridge
+/// for this mismatch is the `terminateLater` pattern: return `.terminateLater`
+/// immediately (which pauses AppKit's termination sequence), do the async
+/// work in a `Task`, then call `reply(toApplicationShouldTerminate:)` once
+/// it's done to let termination proceed.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set once, right after `EngineClient` is constructed in
+    /// `LocalVoiceApp.init()` — see the assignment there for why that timing
+    /// is safe despite this property being main-actor-isolated (implicitly,
+    /// via `NSApplicationDelegate`) and `init()` running before the adaptor
+    /// has published anything.
+    var engineClient: EngineClient?
+
+    private static let logger = Logger(subsystem: "dev.localvoice", category: "app")
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let client = engineClient else { return .terminateNow }
+        Self.logger.notice("quit: stopping engine")
+        Task {
+            await client.stop()
+            await MainActor.run {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct LocalVoiceApp: App {
     /// `UserDefaults` key backing the dev-checkout repo root, editable later
@@ -10,6 +47,7 @@ struct LocalVoiceApp: App {
 
     private let client: EngineClient
     @State private var appState = AppState()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     private static let logger = Logger(subsystem: "dev.localvoice", category: "app")
 
@@ -17,6 +55,7 @@ struct LocalVoiceApp: App {
         let mode = LaunchMode.devCheckout(Self.resolveDevCheckoutRoot())
         let client = EngineClient(mode: mode)
         self.client = client
+        appDelegate.engineClient = client
 
         // `EngineClient.events` finishes only after `stop()` or a final
         // (no-respawn) death — see Task 3/4's notes — so this loop is
