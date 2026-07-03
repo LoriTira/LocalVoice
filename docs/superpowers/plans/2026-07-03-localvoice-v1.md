@@ -545,6 +545,7 @@ def test_plain_text_passes_through_unchanged():
         ("See [the docs](https://x.y) now", "See the docs now"),
         ("- item one\n- item two", "item one item two"),
         ("Inline `code` here", "Inline code here"),
+        ("call my_variable_name now", "call my variable name now"),
         ("Nice \U0001f600 day ✨", "Nice day"),
         ("  spaced   out  ", "spaced out"),
     ],
@@ -641,7 +642,8 @@ def strip_speech_markup(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
     text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.M)
-    text = re.sub(r"(\*\*|__|\*|_|`)", "", text)
+    text = re.sub(r"(\*\*|__|\*|`)", "", text)
+    text = text.replace("_", " ")  # snake_case identifiers must stay speakable: my_var -> "my var"
     text = _EMOJI.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip()
 ```
