@@ -218,31 +218,168 @@ final class EngineClientTests: XCTestCase {
     /// boot. Triggered by sending a command whose encoded line contains
     /// "die", which the fixture matches before its echo catch-all and exits
     /// 7 without any respawn-suppressing shutdown handshake.
+    ///
+    /// Runs a FULL second cycle to make the reset load-bearing: boot → ready →
+    /// die → `.respawning(1)` → the respawned fixture re-emits ready on its own
+    /// → die AGAIN → assert `.respawning(1)` a *second* time, NOT `(2)`. A
+    /// single die→respawn would pass even with the reset deleted (the counter
+    /// starts at 0 and nothing bumped it before the first crash); it's the
+    /// second healthy boot's reset that this pins — without the
+    /// `respawnAttempt = 0` on `.ready`, the second crash would report
+    /// `.respawning(2)`. Verified by mutation: commenting out that reset line
+    /// makes the final assertion here fail.
     func testRespawnAttemptResetsAfterReady() async throws {
         let client = makeClient()
         addTeardownBlock { await client.stop() }
         await client.start()
 
-        // Drain startup (.spawned, .engine(.ready), .engine(.enginesReady))
-        // and confirm ready was actually observed before proceeding.
+        // --- First cycle: boot → ready → die → .respawning(attempt: 1) ---
         let startup = await collectEvents(from: client, count: 3)
         let sawReady = startup.contains { if case .engine(.ready) = $0 { return true } else { return false } }
         XCTAssertTrue(sawReady, "expected startup to include .engine(.ready), got \(startup)")
 
         await client.send(.downloadModel(repo: "die"))
 
-        // Bounded at the first .respawning: the respawned fixture emits
-        // ready again on its own, so collecting further would race that.
-        let events = await collectEvents(
+        let firstCrash = await collectEvents(
             from: client,
             untilMatching: { if case .respawning = $0 { return true } else { return false } },
             stopCount: 1,
             timeout: 10
         )
-        try XCTAssertEqualSequence(events, [
+        try XCTAssertEqualSequence(firstCrash, [
             .exited(code: 7),
             .respawning(attempt: 1, delaySeconds: 1),
         ])
+
+        // --- Second boot: wait for the respawned fixture to re-emit ready on
+        // its own (this is the reset point under test), then confirm it. ---
+        let secondBoot = await collectEvents(
+            from: client,
+            untilMatching: { if case .engine(.ready) = $0 { return true } else { return false } },
+            stopCount: 1,
+            timeout: 10
+        )
+        let sawSecondReady = secondBoot.contains { if case .engine(.ready) = $0 { return true } else { return false } }
+        XCTAssertTrue(sawSecondReady, "expected the respawned fixture to re-emit .engine(.ready), got \(secondBoot)")
+
+        // --- Second cycle: die AGAIN → must be .respawning(attempt: 1), not 2.
+        // Send only after ready confirms the second boot is live (its stdin is
+        // connected); the reset must have fired on that ready. ---
+        await client.send(.downloadModel(repo: "die"))
+
+        let secondCrash = await collectEvents(
+            from: client,
+            untilMatching: { if case .respawning = $0 { return true } else { return false } },
+            stopCount: 1,
+            timeout: 10
+        )
+        let secondRespawn = secondCrash.compactMap { event -> Int? in
+            if case let .respawning(attempt, _) = event { return attempt }
+            return nil
+        }
+        XCTAssertEqual(secondRespawn, [1],
+            "the second healthy boot must reset respawnAttempt, so the second crash reports attempt 1 not 2; got \(secondCrash)")
+    }
+
+    /// `restart()` must cycle the subprocess WITHOUT finishing the `events`
+    /// continuation, so the app's single long-lived consumer keeps receiving
+    /// events from the *new* process on the same stream. This is the
+    /// regression guard for the "Restart Engine severs the pipe" defect:
+    /// `stop()` + `start()` would finish the stream on the way down, so the
+    /// post-restart `.spawned`/`.ready`/`.enginesReady` (and everything after)
+    /// would land in a finished continuation and never reach the consumer.
+    ///
+    /// Drives one long-lived `for await` loop for the whole scenario — exactly
+    /// how the app consumes the stream (a single loop tied to `App.init()`) —
+    /// and asserts the second boot's events arrive on it *after* a `restart()`
+    /// issued from a separate task. If `restart()` finished the stream, the
+    /// loop would end during the restart and the post-restart events would be
+    /// lost, failing the assertion.
+    func testRestartKeepsEventStreamAliveAcrossRespawn() async throws {
+        let client = makeClient()
+        addTeardownBlock { await client.stop() }
+        await client.start()
+
+        let events: [ClientEvent] = await withTaskGroup(of: [ClientEvent].self) { group in
+            group.addTask {
+                var collected: [ClientEvent] = []
+                var sawFirstEnginesReady = false
+                for await event in await client.events {
+                    collected.append(event)
+                    // The first `.enginesReady` marks the initial boot done —
+                    // trigger the restart from here so it's ordered strictly
+                    // after boot, then keep looping on the *same* stream to
+                    // catch the post-restart events.
+                    if case .engine(.enginesReady) = event, !sawFirstEnginesReady {
+                        sawFirstEnginesReady = true
+                        await client.restart()
+                    }
+                    // Stop once the second boot completes: a second `.spawned`
+                    // followed by a second `.enginesReady` proves the new
+                    // process's events reached this same loop.
+                    let spawnedCount = collected.filter { $0 == .spawned }.count
+                    let enginesReadyCount = collected.filter { $0 == .engine(.enginesReady) }.count
+                    if spawnedCount >= 2, enginesReadyCount >= 2 { break }
+                }
+                return collected
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                return []
+            }
+            let result = await group.next() ?? []
+            group.cancelAll()
+            return result
+        }
+
+        // The post-restart boot's events must be present on the same stream.
+        let spawnedCount = events.filter { $0 == .spawned }.count
+        XCTAssertGreaterThanOrEqual(spawnedCount, 2,
+            "expected a second .spawned from the restart's new process on the same stream, got \(events)")
+        let readyCount = events.filter {
+            if case .engine(.ready) = $0 { return true } else { return false }
+        }.count
+        XCTAssertGreaterThanOrEqual(readyCount, 2,
+            "expected a second .engine(.ready) from the restart's new process, got \(events)")
+        let enginesReadyCount = events.filter { $0 == .engine(.enginesReady) }.count
+        XCTAssertGreaterThanOrEqual(enginesReadyCount, 2,
+            "expected a second .engine(.enginesReady) from the restart's new process, got \(events)")
+        // No respawn/exit noise: a clean restart tears down gracefully (no
+        // `.exited` surfaced) and never enters the crash-respawn path.
+        XCTAssertFalse(events.contains { if case .respawning = $0 { return true } else { return false } },
+            "a graceful restart must not trigger the crash-respawn path, got \(events)")
+    }
+
+    /// `stop()` after a `restart()` must still finish the `events` continuation
+    /// — restart preserving the stream must not have left it un-finishable.
+    func testStopAfterRestartFinishesEventStream() async throws {
+        let client = makeClient()
+        await client.start()
+        _ = await collectEvents(from: client, count: 3) // drain first boot
+
+        await client.restart()
+        _ = await collectEvents(from: client, count: 3) // drain second boot
+
+        await client.stop()
+
+        let loopExited = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in await client.events {
+                    // Drain any trailing racy line; the assertion is that this
+                    // loop ends on its own.
+                }
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+        XCTAssertTrue(loopExited,
+            "for await over client.events must exit after stop() finishes the continuation, even following a restart()")
     }
 
     /// `stop()` must finish the `events` continuation so a `for await`
