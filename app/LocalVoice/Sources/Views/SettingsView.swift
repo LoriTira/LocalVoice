@@ -23,6 +23,14 @@ struct SettingsView: View {
                     }
                 }
             }
+            // Spec §6: the derived form's footer names the overlay file where
+            // edits land. `set_config` writes changes to `localvoice.local.toml`
+            // (the local overlay), leaving the committed defaults untouched.
+            Section {
+                Text("Changes are saved to localvoice.local.toml, your local settings overlay.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .onAppear {
