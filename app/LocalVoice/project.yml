@@ -1,0 +1,39 @@
+name: LocalVoice
+options:
+  bundleIdPrefix: dev.localvoice
+  deploymentTarget:
+    macOS: "15.0"
+targets:
+  LocalVoice:
+    type: application
+    platform: macOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: LocalVoice
+        NSMicrophoneUsageDescription: LocalVoice records only while the push-to-talk key is held.
+        LSMinimumSystemVersion: "15.0"
+    settings:
+      base:
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+  LocalVoiceTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: LocalVoice
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  LocalVoice:
+    build:
+      targets:
+        LocalVoice: all
+        LocalVoiceTests: [test]
+    test:
+      targets: [LocalVoiceTests]

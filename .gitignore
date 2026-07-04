@@ -9,3 +9,9 @@ localvoice.local.toml
 .claude/
 .superpowers/
 *.local.tmp
+
+# Xcode / XcodeGen
+app/LocalVoice/LocalVoice.xcodeproj/
+app/LocalVoice/build/
+DerivedData/
+*.xcuserstate

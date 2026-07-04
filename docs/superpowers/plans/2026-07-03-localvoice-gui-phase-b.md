@@ -22,7 +22,7 @@
 
 ---
 
-### Task B1: Project scaffold (XcodeGen)
+### Task 1: Project scaffold (XcodeGen)
 
 **Files:**
 - Create: `app/LocalVoice/project.yml`, `app/LocalVoice/Sources/LocalVoiceApp.swift`, `app/LocalVoice/Sources/Info.plist`, `app/LocalVoice/Tests/SmokeTests.swift`
@@ -61,6 +61,9 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources: [Tests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: LocalVoice
 schemes:
@@ -117,7 +120,7 @@ DerivedData/
 
 ---
 
-### Task B2: Protocol types (Codable contracts)
+### Task 2: Protocol types (Codable contracts)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Protocol/EngineEvent.swift`, `app/LocalVoice/Sources/Protocol/EngineCommand.swift`, `app/LocalVoice/Sources/Protocol/JSONValue.swift`
@@ -229,7 +232,7 @@ final class ProtocolTests: XCTestCase {
 
 ---
 
-### Task B3: EngineClient actor
+### Task 3: EngineClient actor
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Engine/EngineClient.swift`, `app/LocalVoice/Sources/Engine/LaunchMode.swift`
@@ -273,10 +276,12 @@ printf '%s\n' '{"event": "engines_ready"}'
 while IFS= read -r line; do
   case "$line" in
     *shutdown*) printf '%s\n' '{"event": "state", "state": "idle"}'; exit 0 ;;
-    *) printf '%s\n' "{\"event\": \"error\", \"message\": \"echo: $line\"}" ;;
+    *) esc=${line//\\/\\\\}; esc=${esc//\"/\\\"}; printf '%s\n' "{\"event\": \"error\", \"message\": \"echo: $esc\"}" ;;
   esac
 done
 ```
+
+Implementation notes (post-B3): the fixture must JSON-escape the echoed line (quotes/backslashes) or its own send-scenario emits invalid JSON. Also: test runners cannot execute fixtures from TCC-protected folders (e.g. ~/Desktop) without breaking child-stdout pipes - tests stage the fixture into a temp dir; keep #filePath as source of truth.
 
 - [ ] **Step 1: Failing tests** — spawn the fixture via `LaunchMode.custom`, collect events with a bounded async loop (timeout 5 s):
   - startup yields `.spawned`, `.engine(.ready(version: 1, …))`, `.engine(.enginesReady)` in order;
@@ -288,7 +293,7 @@ done
 
 ---
 
-### Task B4: AppState reducer
+### Task 4: AppState reducer
 
 **Files:**
 - Create: `app/LocalVoice/Sources/State/AppState.swift`
@@ -335,7 +340,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B5: App shell + Talk view (behavior contract)
+### Task 5: App shell + Talk view (behavior contract)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/MainWindow.swift`, `app/LocalVoice/Sources/Views/TalkView.swift`, `app/LocalVoice/Sources/Views/StatusBanner.swift`
@@ -351,7 +356,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B6: Settings view (derived form)
+### Task 6: Settings view (derived form)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/SettingsView.swift`, `app/LocalVoice/Sources/Views/SettingRow.swift`
@@ -366,7 +371,7 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B7: Models + Setup views
+### Task 7: Models + Setup views
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Views/ModelsView.swift`, `app/LocalVoice/Sources/Views/SetupView.swift`
@@ -381,22 +386,22 @@ Reduction semantics (complete, binding):
 
 ---
 
-### Task B8: HotkeyMonitor (global right-command PTT)
+### Task 8: HotkeyMonitor (global right-command PTT)
 
 **Files:**
 - Create: `app/LocalVoice/Sources/Engine/HotkeyMonitor.swift`
 - Test: `app/LocalVoice/Tests/HotkeyLogicTests.swift`
 
 **Contract:**
-- CGEvent tap (`CGEvent.tapCreate`, session tap, listen-only) on `flagsChanged` + `keyDown`: right command = keycode 54 on `flagsChanged` (down when `flags.contains(.maskCommand)` AND keycode 54; up when keycode 54 and command bit cleared); Esc = keycode 53 on `keyDown`. Debounce/held-ms measured with `ContinuousClock` from down to up; on up, call `onPttUp(heldMs)`; on down `onPttDown()`; Esc → `onEsc()`. Tap-creation failure (no permission) → `var available: Bool` false, surfaced by SetupView's Input Monitoring card; retry via `refresh()` (called on app refocus).
-- Pure helper (tested without a real tap): `enum KeyDecision { case pttDown, pttUp, esc, none }` + `func decide(type: CGEventType, keycode: Int64, commandBit: Bool, pttCurrentlyDown: Bool) -> KeyDecision` — the complete truth table: (flagsChanged, 54, true, false)→pttDown; (flagsChanged, 54, false, true)→pttUp; (flagsChanged, 54, true, true)→none; (keyDown, 53, _, _)→esc; everything else→none.
+- CGEvent tap (`CGEvent.tapCreate`, session tap, listen-only) on `flagsChanged` + `keyDown`: right command = keycode 54 on `flagsChanged` (down when `flags.contains(.maskCommand)` AND keycode 54 AND PTT not already down; up when keycode 54 and PTT is currently down, regardless of the command bit — see the B8 review note below); Esc = keycode 53 on `keyDown`. Debounce/held-ms measured with `ContinuousClock` from down to up; on up, call `onPttUp(heldMs)`; on down `onPttDown()`; Esc → `onEsc()`. Tap-creation failure (no permission) → `var available: Bool` false, surfaced by SetupView's Input Monitoring card; retry via `refresh()` (called on app refocus). Tap disabled by the system (`kCGEventTapDisabledByTimeout`/`kCGEventTapDisabledByUserInput`) → re-enabled inline from the callback via `CGEvent.tapEnable(tap:enable: true)`, not silently left dead (B8 review item 1).
+- Pure helper (tested without a real tap): `enum KeyDecision { case pttDown, pttUp, esc, none }` + `func decide(type: CGEventType, keycode: Int64, commandBit: Bool, pttCurrentlyDown: Bool) -> KeyDecision` — the complete truth table: (flagsChanged, 54, true, false)→pttDown; (flagsChanged, 54, false, true)→pttUp; (flagsChanged, 54, true, true)→pttUp; (keyDown, 53, _, _)→esc; everything else→none. **B8 review, item 3:** the third row was originally specified as `→none` (repeat-suppression reasoning: command bit still set means still held). That's wrong — `commandBit` is the *aggregate* command-key flag (true if either command key is down), so holding left-⌘ and releasing right-⌘ first hits exactly this row with the bit still set, and the old `→none` swallowed that release and stuck PTT down. `pttCurrentlyDown` now wins unconditionally on keycode 54, so this row is `→pttUp`; see `HotkeyMonitor.swift`'s `decide(...)` doc comment and `HotkeyLogicTests.testDualCommandKeyReleaseFiresPttUpNotSwallowedByAggregateCommandBit` for the full reasoning and regression coverage.
 - Wire in `LocalVoiceApp`: monitor callbacks send `pttDown`/`pttUp(heldMs:)`/`esc` through the client. TalkView's on-screen button and the global key coexist (orchestrator handles repeats).
 - [ ] **Steps:** failing truth-table tests → implement → gate → manual acceptance: with the app running (not focused — switch to another app), hold right ⌘ and speak; barge in mid-answer; Esc cancels. This mirrors the v1 terminal acceptance list.
 - [ ] **Commit** — `feat(app): global push-to-talk via CGEvent tap`.
 
 ---
 
-### Task B9: CI + docs + phase acceptance
+### Task 9: CI + docs + phase acceptance
 
 **Files:**
 - Modify: `.github/workflows/ci.yml` (add swift job), `README.md` (GUI section), `docs/gui.md` (app architecture section)

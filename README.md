@@ -174,6 +174,47 @@ including all locked decisions and their rationale, error handling, testing
 strategy, and the phased roadmap, is
 [`docs/superpowers/specs/2026-07-03-localvoice-architecture-design.md`](docs/superpowers/specs/2026-07-03-localvoice-architecture-design.md).
 
+## The app
+
+`LocalVoice.app` is a native SwiftUI app (macOS 15+) that drives the same
+engine as the CLI, over the line-delimited JSON protocol `localvoice serve`
+speaks on stdio — a Talk view for conversations, a Settings pane generated
+from the engine's own config schema, a Models manager for
+installed/downloadable models, and the same global right-⌘ push-to-talk
+hotkey, all with no functionality the CLI doesn't also have. It lives in
+`app/LocalVoice/` as an Xcode project.
+
+Build and run it:
+
+```bash
+brew install xcodegen
+cd app/LocalVoice
+xcodegen generate
+open LocalVoice.xcodeproj   # then Run, or:
+xcodebuild -scheme LocalVoice -destination 'platform=macOS' build
+```
+
+`LocalVoice.xcodeproj` is generated (via [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+from `app/LocalVoice/project.yml`) and gitignored, not committed — run
+`xcodegen generate` once after cloning and again any time `project.yml`
+changes.
+
+**Dev-checkout mode**: in v1, the app always spawns `uv run localvoice
+serve` from a repo checkout rather than bundling the engine — the same `uv
+sync`'d environment the CLI uses. By default it resolves that checkout
+relative to its own build location, which finds this repo automatically for
+anyone building from a clone the normal way; the Setup pane lets you
+override the path if you've moved the checkout or want to point the app at
+a different clone. A packaged `.app` that bundles the engine and needs no
+repo checkout at all is planned for phase C.
+
+**Permissions**: the app needs the same Microphone and Input Monitoring
+grants the CLI does (see [macOS permissions](#macos-permissions) above),
+except the system prompts and the entries you enable in System Settings
+will say **LocalVoice** (the app) instead of your terminal — grant those,
+then relaunch the app the same way you'd relaunch a terminal after granting
+them to it.
+
 ## Roadmap
 
 **v1** (this repository) is the full push-to-talk loop: hold, talk, release,
