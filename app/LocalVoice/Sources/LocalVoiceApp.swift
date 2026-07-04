@@ -102,12 +102,53 @@ struct LocalVoiceApp: App {
         // hierarchy, which a window close can trigger even though the app
         // itself stays alive. Tying the loop to `App.init()` instead keeps
         // it running across any number of window close/reopen cycles.
-        Task { @MainActor [appState] in
-            await client.start()
-            for await event in client.events {
-                appState.reduce(event)
+        //
+        // Guarded on `isRunningUnderXCTest` (Task 9): `xcodebuild test` runs
+        // an *app-hosted* test bundle — the full `LocalVoice.app` launches
+        // for real, so this `init()` runs for real too, and an unguarded
+        // `client.start()` here would spawn `uv run localvoice serve` from
+        // the dev-checkout path on every test invocation (confirmed via
+        // `ps` during a local `xcodebuild test` run: the real `python3
+        // .../localvoice serve` child appears mid-suite even though no test
+        // references `client` directly — see the task-9 report). That's
+        // merely slow and noisy on a dev machine with `uv` and the venv
+        // present, but on the `macos-latest` CI runner (no `uv`, no venv,
+        // no models) it's a hard failure or hang for every single test run,
+        // for a subprocess the 70 `LocalVoiceTests` never actually exercise
+        // (`EngineClientTests` spins up its own isolated `EngineClient`
+        // instances against the bash fixture via `.custom(executable:
+        // arguments:)` — see that file — never this app-level `client`).
+        // Skipping the spawn is therefore a pure CI/test-runner concern
+        // with no effect on any assertion the suite makes; a normal launch
+        // (`open LocalVoice.app`, or Xcode's Run action) does not set
+        // either environment variable and autostarts exactly as before.
+        if !Self.isRunningUnderXCTest {
+            Task { @MainActor [appState] in
+                await client.start()
+                for await event in client.events {
+                    appState.reduce(event)
+                }
             }
         }
+    }
+
+    /// True when the process is an XCTest run — either an app-hosted test
+    /// bundle (`xcodebuild test`/Xcode's Test action, which launches the
+    /// real `LocalVoice.app` with a test bundle injected into it) or a
+    /// standalone one. Xcode 26.6 sets both `XCTestConfigurationFilePath`
+    /// and `XCTestBundlePath` in the process environment for the former
+    /// (empirically confirmed on this toolchain: `XCTestConfigurationFilePath`
+    /// is present — if oddly empty-valued — and `XCTestBundlePath` holds
+    /// `Contents/PlugIns/LocalVoiceTests.xctest`); checking key *presence*
+    /// via `!= nil` (not non-emptiness) is what the empty-valued case above
+    /// actually needs, and is also the standard, toolchain-version-portable
+    /// way to detect XCTest — `Bundle.allBundles` scanning for a
+    /// `.xctest` suffix is the usual alternative and is more fragile across
+    /// Xcode versions. Both keys are checked (not just one) as a hedge
+    /// against a future Xcode setting one but not the other.
+    private static var isRunningUnderXCTest: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
     }
 
     var body: some Scene {
