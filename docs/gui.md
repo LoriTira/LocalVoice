@@ -329,6 +329,83 @@ reads events until it sees `engines_ready`, writes `inject_audio` at that
 point, and asserts `user_text` → `assistant_clause` → `turn_done` all
 arrive before sending `shutdown`.
 
+## Client architecture (LocalVoice.app)
+
+`LocalVoice.app` (`app/LocalVoice/`, a SwiftUI app generated via
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) from `project.yml`) is one
+concrete client of the protocol above — everything it can do, it does
+through the commands and events already documented here; it has no access
+the protocol doesn't expose. Three types carry the whole client-side
+contract:
+
+- **`EngineClient`** (`app/LocalVoice/Sources/Engine/EngineClient.swift`) —
+  an `actor` that owns the engine subprocess. It spawns `serve` per a
+  `LaunchMode` (`app/LocalVoice/Sources/Engine/LaunchMode.swift` —
+  `.devCheckout(root)` runs `uv run localvoice serve` from a repo
+  checkout, the only mode the app itself uses in phase B; `.custom` is
+  the test/fixture and future phase-C bundled-binary mode), decodes its
+  newline-delimited stdout into `EngineEvent`s (this doc's event table),
+  forwards stderr to the unified system logger, and respawns on an
+  unexpected exit with capped exponential backoff (1, 2, 4, 8, 8, … seconds,
+  reset to 0 on the next `ready`). Callers see a single
+  `AsyncStream<ClientEvent>` (`events`) that layers three lifecycle cases
+  (`.spawned`, `.exited(code:)`, `.respawning(attempt:delaySeconds:)`) over
+  every decoded `.engine(EngineEvent)` — the reason the type is
+  `ClientEvent` and not the engine's own `EngineEvent` verbatim is that a
+  respawn banner or a "reconnecting" indicator needs to render from
+  subprocess-level facts (died, restarting, gave up) that have no
+  equivalent event on the wire protocol itself. `send(_:)` writes one
+  `EngineCommand` (this doc's command table) as an encoded line to the
+  child's stdin; `stop()` sends `shutdown`, waits up to 3 s, then SIGKILLs.
+- **`AppState`** (`app/LocalVoice/Sources/State/AppState.swift`) — an
+  `@Observable @MainActor` class that is the single source of truth for
+  every view. Its `reduce(_ event: ClientEvent)` is a pure event-in,
+  state-out step: one call per event, no async machinery of its own, which
+  is what makes `AppStateTests` able to drive whole event sequences through
+  it and assert on the resulting fields without touching a real
+  `EngineClient`. There is exactly one long-lived consumer of
+  `EngineClient.events` per app process — an unstructured `Task` started
+  from `LocalVoiceApp.init()` (`app/LocalVoice/Sources/LocalVoiceApp.swift`)
+  that loops `for await event in client.events { appState.reduce(event) }`
+  for the life of the process, independent of any view's lifetime (closing
+  LocalVoice's last window does not terminate the app or cancel this loop —
+  standard SwiftUI `WindowGroup` behavior, and the reason this is a
+  detached `Task` rather than a view's `.task`).
+- **`HotkeyMonitor`** (`app/LocalVoice/Sources/Engine/HotkeyMonitor.swift`)
+  — a `@MainActor` class wrapping a listen-only `CGEventTap` on
+  `flagsChanged` (right-⌘) and `keyDown` (Esc), scoped to the current login
+  session. Per this doc's "the GUI owns the actual key tap in Swift" note
+  above, `serve` installs no hotkey listener of its own — `HotkeyMonitor`'s
+  three callbacks (`onPttDown`, `onPttUp(heldMs:)`, `onEsc`) are wired in
+  `LocalVoiceApp.init()` to send exactly the same `ptt_down` / `ptt_up` /
+  `esc` commands the on-screen hold-to-talk button
+  (`app/LocalVoice/Sources/Views/TalkView.swift`) sends, so the engine
+  cannot distinguish a physical key press from a button click. The
+  press/release/esc *decision* itself is a pure free function
+  (`decide(type:keycode:commandBit:pttCurrentlyDown:)`, same file) kept
+  separate from the tap callback specifically so it can be unit-tested
+  (`HotkeyLogicTests`) without a live, granted tap — `CGEvent.tapCreate`
+  returns `nil` silently when Input Monitoring is denied, which is not
+  reproducible on demand or in CI.
+
+Together, the reduction contract is: **events flow one way, down a single
+pipe** — `serve`'s stdout → `EngineClient` (decode) → `ClientEvent` →
+`AppState.reduce` (the only place protocol/lifecycle events turn into UI
+state) → SwiftUI's own diffing re-renders whatever view reads the changed
+`@Observable` property. Commands flow the other way, from either input
+source (button or global hotkey) through the same `EngineClient.send(_:)`,
+never through `AppState` — `AppState` only ever reduces, it never issues
+commands itself.
+
+The four views (`app/LocalVoice/Sources/Views/`: `TalkView`, `ModelsView`,
+`SettingsView`, `SetupView`, assembled by `MainWindow`) are thin readers of
+`AppState` plus direct `EngineClient.send(_:)` callers; none of them decode
+protocol JSON or manage the subprocess themselves. `SettingsView`'s derived
+form is built entirely from `ready.schema` (this doc's derived-settings
+section) with no per-field Swift code — a new `Config` field on the Python
+side needs no client change to appear in the Settings pane, only a new
+`schema.py` descriptor.
+
 ## Related reading
 
 - `docs/superpowers/specs/2026-07-03-localvoice-gui-design.md` — the full
@@ -337,5 +414,9 @@ arrive before sending `shutdown`.
 - `docs/superpowers/plans/2026-07-03-localvoice-gui-phase-a.md` — the
   task-by-task implementation plan for the engine side of this protocol
   (`schema.py`, `overlay.py`, `engineset.py`, `modelstore.py`, `serve.py`).
+- `docs/superpowers/plans/2026-07-03-localvoice-gui-phase-b.md` — the
+  task-by-task implementation plan for `LocalVoice.app` itself: the Xcode
+  project, `EngineClient`, `AppState`, the four views, `HotkeyMonitor`, and
+  CI.
 - `docs/architecture.md` — the underlying engine's state machine, threading
   model, and barge-in mechanics, all of which `serve` reuses unchanged.
