@@ -227,10 +227,13 @@ struct SetupView: View {
             HStack {
                 Button("Restart Engine") {
                     saveDevCheckoutPath()
-                    Task {
-                        await client.stop()
-                        await client.start()
-                    }
+                    // `restart()`, not `stop()` + `start()`: the latter
+                    // finishes the shared `events` stream on the way down,
+                    // permanently severing the app's one consumer loop so the
+                    // transcript/orb/footer would never update again after the
+                    // restart. `restart()` cycles the child without finishing
+                    // the stream.
+                    Task { await client.restart() }
                 }
             }
         }
