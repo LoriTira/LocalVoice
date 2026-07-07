@@ -1,5 +1,4 @@
 from localvoice.config import ToolsConfig
-from localvoice.tools.web import FetchPageTool, WebSearchTool
 
 
 def registry_for(cfg: ToolsConfig) -> list:
@@ -11,6 +10,11 @@ def registry_for(cfg: ToolsConfig) -> list:
     tools = []
 
     if cfg.web_search:
+        # Imported here, not at module top: web.py carries the network
+        # dependencies (ddgs, trafilatura), which must not load just because
+        # config code touched the registry with tools disabled.
+        from localvoice.tools.web import FetchPageTool, WebSearchTool
+
         tools.append(WebSearchTool(cfg))
         tools.append(FetchPageTool(cfg))
 
