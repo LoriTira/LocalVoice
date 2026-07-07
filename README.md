@@ -263,10 +263,12 @@ client architecture.
 ## Roadmap
 
 **Shipped**: the full push-to-talk engine and CLI (hold, talk, release,
-answer, barge-in, Esc, earcons, configuration, the `setup` command), and
-the native macOS app (live conversation view, generated settings editor
-with restore-defaults, model manager, permission onboarding, global hotkey
-via the app's own event tap) — with tests, docs, and CI for both.
+answer, barge-in, Esc, earcons, configuration, the `setup` command),
+free web-search tool calling (DuckDuckGo, no keys) the model can invoke
+mid-answer, and the native macOS app (live conversation view, generated
+settings editor with restore-defaults, model manager, permission
+onboarding, global hotkey via the app's own event tap) — with tests, docs,
+and CI for both.
 
 **Next — packaging (phase C)**: a self-contained `LocalVoice.app` that
 bundles the engine (PyInstaller) so no repo checkout or `uv` is needed,
@@ -276,9 +278,9 @@ distributed via GitHub Releases.
 than after you release, for an estimated further ~0.3 s latency win), a
 `parakeet-mlx` STT option, an OpenAI-compatible LLM backend so LM Studio or
 Ollama can serve as the LLM engine, a spoken thinking-mode toggle, session
-transcript export, a menu-bar shell, tool calling, additional TTS backends
-(Chatterbox-Turbo, Qwen3-TTS), and an experiment in skipping STT entirely
-via a model with native audio input (Gemma 4 E4B).
+transcript export, a menu-bar shell, screen-vision tool calls (phase T3),
+additional TTS backends (Chatterbox-Turbo, Qwen3-TTS), and an experiment in
+skipping STT entirely via a model with native audio input (Gemma 4 E4B).
 
 ## Acknowledgments
 
