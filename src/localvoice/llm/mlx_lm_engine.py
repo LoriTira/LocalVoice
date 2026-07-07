@@ -170,6 +170,16 @@ class MlxLmEngine:
         self._prompt_tokens = []
 
     def stream(
-        self, messages: list[Message], *, think: bool, tools: list[dict] | None = None
+        self,
+        messages: list[Message],
+        *,
+        think: bool,
+        tools: list[dict] | None = None,
+        image_path: str | None = None,
     ) -> Iterator[str]:
+        if image_path is not None:
+            # Checked first, before any model/tokenizer access: this engine
+            # never loads a vision tower, so there is nothing honest it can
+            # do with an image. MlxVlmEngine is the one that can.
+            raise ValueError("image input requires the mlx_vlm engine")
         return _stream_text(self, self._model, messages, think, tools)

@@ -316,3 +316,85 @@ def test_mlx_vlm_hybrid_text_parity_and_prefix_reuse():
         if "<think>" in joined or i > 80:
             break
     assert "<think>" in joined, f"no translated reasoning in stream: {joined!r}"
+
+
+def _write_solid_png(path: Path, width: int, height: int, rgb: tuple[int, int, int]) -> None:
+    """Pure-python PNG writer for a single solid-color RGB image.
+
+    No PIL/numpy needed for a fixture this trivial: one IHDR (8-bit truecolor,
+    no palette/interlace), one IDAT (zlib-compressed scanlines, each prefixed
+    with filter-type 0 = None — correct and simplest for a flat color), one
+    IEND. Every multi-byte PNG field is big-endian per spec; struct.pack(">..")
+    handles that, zlib.compress gives the zlib-wrapped (not raw) deflate
+    stream IDAT requires, and zlib.crc32 is the exact CRC-32 variant PNG
+    chunks use.
+    """
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    row = bytes([0]) + bytes(rgb) * width  # filter-type byte + width RGB pixels
+    raw = row * height
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # depth 8, color type 2 (RGB)
+    png = (
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(
+            b"IEND", b""
+        )
+    )
+    path.write_bytes(png)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not GEMMA_LLM.exists(), reason="Gemma vision-capable model not present")
+def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path):
+    """Task 4's minimal image entry point (T3's hook), proven on the real model.
+
+    1. stream(..., image_path=...) drives mlx-vlm's own generation
+       (_stream_image, NOT the text-tower adapter) against a real solid-red
+       fixture image, end-to-end through the real Gemma 4 vision tower.
+    2. The cache-interaction decision documented in _stream_image's docstring
+       is verified live, not just by source-reading: mlx-vlm never receives
+       self._cache for an image turn (it builds and discards its own scratch
+       cache), so the persisted TEXT-turn cache is untouched by the image
+       call other than the engine's own defensive reset — and a plain TEXT
+       turn run immediately afterward still produces real text through the
+       ordinary hybrid (_TextTowerAdapter) path, proving the image turn left
+       no wreckage for it to trip over.
+    """
+    from localvoice.llm.mlx_vlm_engine import MlxVlmEngine
+
+    png = tmp_path / "red.png"
+    _write_solid_png(png, 64, 64, (255, 0, 0))
+
+    engine = MlxVlmEngine(LlmConfig(model=str(GEMMA_LLM), max_tokens=32))
+    engine.load()
+    assert engine._cache[0].offset == 0  # nothing prefilled yet
+
+    reply = "".join(
+        engine.stream(
+            [{"role": "user", "content": "What color is this image? Answer with one word."}],
+            think=False,
+            image_path=str(png),
+        )
+    )
+    assert "red" in reply.lower(), f"expected 'red' in the model's answer, got: {reply!r}"
+
+    # The persisted TEXT-turn cache is left at a clean zero offset — either
+    # because the image turn never touched it in the first place (it isn't
+    # passed to mlx-vlm at all) or via the engine's own defensive reset.
+    assert engine._cache[0].offset == 0
+
+    # A plain TEXT turn right after must still work through the ordinary
+    # hybrid path — proof the image turn didn't wedge the engine.
+    text_reply = "".join(
+        engine.stream([{"role": "user", "content": "Say hello in one word."}], think=False)
+    )
+    assert text_reply.strip(), "text turn after an image turn produced no text"
+    assert engine._cache[0].offset > 0  # the text turn prefilled normally

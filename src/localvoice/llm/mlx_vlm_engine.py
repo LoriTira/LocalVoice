@@ -34,8 +34,12 @@ class MlxVlmEngine:
     model.language_model — so the shipped prefix-reuse / think-translation /
     tools code (the shared `_stream_text`) carries over verbatim. The one
     blocker mlx-vlm's tower presents — a LanguageModelOutput return instead of
-    raw logits — is bridged by _TextTowerAdapter. Image turns (T3) will use
-    mlx-vlm generation directly; this engine keeps the text path at parity.
+    raw logits — is bridged by _TextTowerAdapter. IMAGE turns (`stream(...,
+    image_path=...)`) go a different way: `_stream_image` drives mlx-vlm's own
+    generation directly against the full model (vision tower + language
+    tower), since the text-tower adapter has no way to see pixel_values. T3
+    supplies the caller (a screenshot tool feeding a captured PNG back in);
+    this task wires the minimal entry point it calls.
     """
 
     def __init__(self, cfg: LlmConfig) -> None:
@@ -85,6 +89,84 @@ class MlxVlmEngine:
         self._prompt_tokens = []
 
     def stream(
-        self, messages: list[Message], *, think: bool, tools: list[dict] | None = None
+        self,
+        messages: list[Message],
+        *,
+        think: bool,
+        tools: list[dict] | None = None,
+        image_path: str | None = None,
     ) -> Iterator[str]:
+        if image_path is not None:
+            return self._stream_image(messages, think, image_path)
         return _stream_text(self, self._lm, messages, think, tools)
+
+    def _stream_image(
+        self, messages: list[Message], think: bool, image_path: str
+    ) -> Iterator[str]:
+        """Image turns bypass the text-tower adapter entirely.
+
+        `self._processor` (kept at load() time for exactly this) renders the
+        image placeholder through mlx-vlm's OWN chat-template convention —
+        `mlx_vlm.prompt_utils.apply_chat_template` — not the mlx-lm tokenizer
+        `_stream_text` uses for TEXT turns. `mlx_vlm.stream_generate` then
+        drives the FULL model (`self._model`: vision tower + language tower),
+        since `self._lm` only wraps the language tower and cannot consume
+        pixel_values. tools are not offered to image turns (T3's screenshot
+        tool result is described in a standalone turn, not a tool-calling
+        round); `think` is passed to the template best-effort — Gemma 4's
+        template does accept `enable_thinking`, but if a future model swap's
+        template doesn't, we drop it rather than crash (documented limitation:
+        such a model's image turns simply never think).
+
+        No `prompt_cache` is passed to mlx-vlm, so it builds and discards its
+        own scratch KV cache for this call alone (see mlx_vlm.generate.
+        dispatch.stream_generate: absent a `prompt_cache` kwarg, it calls
+        mlx_vlm's own `cache.make_prompt_cache` and never hands the result
+        back to us) — `self._cache`/`self._prompt_tokens`, the persisted
+        TEXT-turn state `_stream_text` trims against, are never read or
+        written by an image turn; prefix reuse is simply skipped (full
+        prefill), which is fine since image turns are rare. Reading gemma4's
+        LanguageModel/Gemma4TextModel (mlx_vlm/models/gemma4/language.py)
+        confirms its __call__ carries no cross-call mutable state of its own
+        either (RoPE offset flows through as a call argument, derived from
+        the cache passed in, never stored on self) — so even the shared
+        language-tower object underneath both self._lm and self._model is not
+        left disturbed by an image turn. The reset below is therefore
+        defensive belt-and-suspenders, not a correctness fix: it is cheap
+        (fresh empty KVCache objects, no compute) and keeps "the next TEXT
+        turn always starts from a known-clean cache after an image turn" a
+        simple, local invariant instead of one resting on the analysis above
+        remaining true across future mlx-vlm versions.
+        """
+        from mlx_vlm import stream_generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        try:
+            prompt = apply_chat_template(
+                self._processor,
+                self._model.config,
+                messages,
+                add_generation_prompt=True,
+                num_images=1,
+                enable_thinking=think,
+            )
+        except TypeError:  # template without enable_thinking support
+            prompt = apply_chat_template(
+                self._processor,
+                self._model.config,
+                messages,
+                add_generation_prompt=True,
+                num_images=1,
+            )
+
+        try:
+            for result in stream_generate(
+                self._model,
+                self._processor,
+                prompt,
+                image=image_path,
+                max_tokens=self._cfg.max_tokens,
+            ):
+                yield result.text
+        finally:
+            self._reset_cache()

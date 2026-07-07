@@ -1,7 +1,10 @@
 import types
 
+import pytest
+
 from localvoice.config import LlmConfig
 from localvoice.llm import mlx_lm_engine, mlx_vlm_engine
+from localvoice.llm.mlx_lm_engine import MlxLmEngine
 from localvoice.llm.mlx_vlm_engine import MlxVlmEngine, _TextTowerAdapter
 
 
@@ -60,3 +63,35 @@ def test_vlm_stream_drives_the_adapter_through_shared_helper(monkeypatch):
     engine, model, messages, think, tools = seen["args"]
     assert engine is eng and model == "ADAPTER"
     assert messages is msgs and think is True and tools is None
+
+
+def test_mlx_lm_engine_raises_on_image_path_before_any_model_access():
+    # Constructed but never load()-ed: _model/_tokenizer are still None. The
+    # raise must fire from the image_path check alone, never from touching
+    # that state — this engine never loads a vision tower, so honesty about
+    # what it can't do is the whole contract.
+    engine = MlxLmEngine(LlmConfig(model="x"))
+    with pytest.raises(ValueError, match="image input requires the mlx_vlm engine"):
+        engine.stream(
+            [{"role": "user", "content": "what is this?"}],
+            think=False,
+            image_path="/tmp/does-not-matter.png",
+        )
+
+
+def test_vlm_stream_routes_image_path_to_dedicated_method(monkeypatch):
+    # image_path must skip the shared text helper (and therefore self._lm/
+    # self._cache) entirely and land on _stream_image with messages/think/
+    # image_path forwarded untouched.
+    seen = {}
+
+    def fake_stream_image(self, messages, think, image_path):
+        seen["args"] = (messages, think, image_path)
+        yield "ok"
+
+    monkeypatch.setattr(MlxVlmEngine, "_stream_image", fake_stream_image)
+    eng = MlxVlmEngine(LlmConfig(model="x"))
+    msgs = [{"role": "user", "content": "what is this?"}]
+    out = list(eng.stream(msgs, think=True, image_path="/tmp/x.png"))
+    assert out == ["ok"]
+    assert seen["args"] == (msgs, True, "/tmp/x.png")
