@@ -1,3 +1,4 @@
+import json
 import threading
 
 import numpy as np
@@ -172,10 +173,17 @@ def test_tool_round_executes_and_speaks_continuation():
     # Both clauses spoken across the two rounds; no marker text ever reaches TTS.
     assert " ".join(tts.texts) == "Let me check. It will rain at noon."
     assert not any("tool_call" in t or "call:" in t for t in tts.texts)
-    # Second stream call carries the tool result as a role:"tool" message.
+    # Second stream call carries the tool result as a role:"tool" message. Its
+    # content is a JSON STRING (not the raw dict): the Gemma chat template's
+    # role:"tool" branch treats a dict as a sequence and iterates its keys,
+    # crashing the continuation render — so the dict is JSON-encoded at the
+    # message-construction site. Round-trips back to the original dict.
     second = llm.calls[1]["messages"]
     assert second[-1]["role"] == "tool"
-    assert second[-1]["content"] == {"results": [{"title": "T", "url": "u", "snippet": "s"}]}
+    assert isinstance(second[-1]["content"], str)
+    assert json.loads(second[-1]["content"]) == {
+        "results": [{"title": "T", "url": "u", "snippet": "s"}]
+    }
     assert calls == [("web_search", "calling web_search")]
     assert results == [("web_search", True, "found 1 result")]
 
@@ -201,7 +209,10 @@ def test_unknown_tool_gets_error_round():
     assert E.PIPELINE_ERROR not in [e.type for e in events]
     second = llm.calls[1]["messages"]
     assert second[-1]["role"] == "tool"
-    assert second[-1]["content"] == {"error": "unknown tool: nope"}
+    # Error results are JSON-encoded too (same template constraint as the
+    # success path — both dict shapes crash the render as a raw dict).
+    assert isinstance(second[-1]["content"], str)
+    assert json.loads(second[-1]["content"]) == {"error": "unknown tool: nope"}
     assert results and results[0][1] is False
 
 

@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import traceback
@@ -170,7 +171,14 @@ def run_pipeline(
                     "role": "tool",
                     "tool_call_id": f"call_{round_no}",
                     "name": call.name,
-                    "content": result.content,
+                    # JSON-encode the dict here: chat templates (e.g. Gemma's)
+                    # test a role:"tool" message's `content` with `is sequence`,
+                    # which is True for a dict — the template then iterates it as
+                    # a list, hits its string keys, and calls .get() on a str,
+                    # crashing the continuation render with UndefinedError. A JSON
+                    # string renders correctly. ToolResult.content stays a dict as
+                    # the tools API; this one site is where it meets the template.
+                    "content": json.dumps(result.content),
                 },
             ]
         if cancel.is_set():
