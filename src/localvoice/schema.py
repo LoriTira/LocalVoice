@@ -26,6 +26,7 @@ _DEFAULT_WIDGETS = {bool: "toggle", int: "number", float: "number", str: "text"}
 
 _ANNOTATIONS: dict[str, dict] = {
     "stt.model": {"widget": "model_picker", "help": "HF repo id or local MLX folder."},
+    "llm.engine": {"help": "mlx_lm (text) or mlx_vlm (text + vision)."},
     "llm.model": {"widget": "model_picker", "help": "HF repo id or local MLX folder."},
     "llm.deep_model": {"widget": "model_picker", "help": "Used with --deep; empty disables it."},
     "llm.think": {"label": "Thinking mode", "help": "Silent reasoning; shown, never spoken."},

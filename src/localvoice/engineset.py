@@ -37,11 +37,11 @@ class EngineProxy:
 
 
 def _default_factories() -> dict:
-    from localvoice.llm.mlx_lm_engine import MlxLmEngine
+    from localvoice.llm import build_llm_engine
     from localvoice.stt.whisper_mlx import WhisperMlxEngine
     from localvoice.tts.kokoro_mlx import KokoroMlxEngine
 
-    return {"stt": WhisperMlxEngine, "llm": MlxLmEngine, "tts": KokoroMlxEngine}
+    return {"stt": WhisperMlxEngine, "llm": build_llm_engine, "tts": KokoroMlxEngine}
 
 
 class EngineSet:

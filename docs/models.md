@@ -33,9 +33,22 @@ at on-disk LM Studio downloads.
 
 ## LLM presets
 
-`[llm].engine = "mlx_lm"` is the only implemented LLM backend in v1 (an
-OpenAI-compatible backend for LM Studio/Ollama-style servers is phase 2 —
-see the architecture spec's roadmap). Three presets are relevant today:
+### Engines
+
+`[llm].engine` picks the backend: `"mlx_lm"` (text-only, the shipped
+default) or `"mlx_vlm"` (text + vision). Both drive the identical
+text-generation path — same prefix reuse, think-translation, and
+tool-calling behavior — so a text-only model behaves the same on either
+engine. `mlx_vlm` matters once image input is wired up (a later tools-phase
+task): only a checkpoint that keeps its vision tower (an mlx-vlm-format
+model, e.g. Gemma 4) can accept one, and only under `mlx_vlm` — `mlx_lm` has
+no image path at all. An OpenAI-compatible backend for LM Studio/Ollama-style
+servers is a further-out roadmap item — see the architecture spec.
+
+### Presets
+
+Three model presets are relevant today, independent of which engine loads
+them:
 
 | Preset | `model` | Role | Expected trade-off |
 |---|---|---|---|
@@ -76,13 +89,16 @@ phase-3 roadmap items, not available in v1.
 
 ### mlx-audio version pin
 
-`mlx-audio` is pinned to exactly `0.4.1` in `pyproject.toml`
-(`mlx-audio==0.4.1`), not a floor like the other dependencies. `0.4.4`
-ships a regression in Kokoro's `SineGen` component that breaks audio length
-(upstream `Blaizzy/mlx-audio` issues #784 and #803); a fix has been merged
-upstream (PR #785) but had not shipped in a release as of this pin. Lift the
-pin to a floor (`mlx-audio>=0.4.1` or similar) once a release containing
-that fix is out and has been verified against this pipeline's TTS tests.
+`mlx-audio` is pinned to exactly `0.4.3` in `pyproject.toml`
+(`mlx-audio==0.4.3`), not a floor like the other dependencies. `0.4.4+`
+reintroduces a regression in Kokoro's `SineGen` component that breaks audio
+length (upstream `Blaizzy/mlx-audio` issues #784 and #803); `0.4.3` is
+verified clean — it's the version the slow suite's Kokoro synthesis test
+(`tests/test_smoke_slow.py`, the regression gate) runs green against. A fix
+has been merged upstream (PR #785) but had not shipped in a release as of
+this pin. Lift the pin to a floor (`mlx-audio>=0.4.3` or similar) once a
+release containing that fix is out and has been verified against this
+pipeline's TTS tests.
 
 Kokoro's grapheme-to-phoneme conversion depends on `misaki[en]`, which is
 declared directly in `pyproject.toml` as a runtime dependency (it isn't
