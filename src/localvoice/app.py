@@ -127,7 +127,15 @@ class Orchestrator:
         # hot-applied between turns too. A non-tool-template model is never
         # offered tools regardless of cfg.tools.enabled (Global Constraints).
         supports_tools = getattr(self._deps.llm, "supports_tools", False)
-        self._deps.tools = self._tools_factory(self._tools_cfg) if supports_tools else []
+        tools = self._tools_factory(self._tools_cfg) if supports_tools else []
+        # Same capability-gating idea as supports_tools above, one level more
+        # specific: an image-producing tool (ScreenshotTool.needs_image_engine
+        # = True) must never be offered to an engine that can't consume the
+        # image it produces (e.g. a plain mlx_lm text engine), even though the
+        # engine supports tool calling in general and the tool is registered.
+        if not getattr(self._deps.llm, "supports_images", False):
+            tools = [t for t in tools if not getattr(t, "needs_image_engine", False)]
+        self._deps.tools = tools
         self._deps.max_tool_rounds = self._tools_cfg.max_rounds
 
         def emit(event: Event) -> None:

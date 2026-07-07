@@ -36,7 +36,7 @@ rebuffer_ms = 300
 [tools]
 enabled = true
 web_search = true
-screenshot = false
+screenshot = true
 max_rounds = 3
 search_results = 5
 page_char_cap = 8000

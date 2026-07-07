@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import traceback
@@ -13,7 +14,7 @@ from localvoice.events import Event, EventType
 from localvoice.llm.base import LLMEngine
 from localvoice.stt.base import STTEngine
 from localvoice.textproc.chunker import ClauseChunker
-from localvoice.textproc.sanitize import TextFilter, strip_speech_markup
+from localvoice.textproc.sanitize import TextFilter, strip_special_markers, strip_speech_markup
 from localvoice.textproc.toolcalls import ToolCall, ToolCallParser
 from localvoice.tools.base import ToolResult, hf_tool_schema
 from localvoice.transcript import Transcript
@@ -46,6 +47,36 @@ def _call_summary(call: ToolCall, malformed: bool) -> str:
     return "Malformed tool call" if malformed else f"Calling {call.name}"
 
 
+def _unlink_quietly(path: str) -> None:
+    """Best-effort delete of a pipeline-owned temp file (a screenshot PNG).
+    A missing file is fine -- the point is only that the capture does not
+    outlive the turn that produced it."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _sanitize_tool_content(value: Any) -> Any:
+    """Recursively strip chat-template control markers from every string in a
+    tool result, before it becomes role:"tool" message content. Tool content
+    can originate from untrusted sources (web_search/fetch_page pull raw page
+    text) and apply_chat_template renders marker strings like
+    ``<|tool_response>`` or ``<think>`` as real special tokens rather than
+    literal text -- a hostile page could otherwise forge a fake tool response
+    or open a reasoning block in the continuation prompt. Applied uniformly
+    at the one message-construction site regardless of which branch produced
+    the result (executed tool, malformed call, unknown tool, or exception),
+    so nothing tool-specific has to remember to sanitize itself."""
+    if isinstance(value, str):
+        return strip_special_markers(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_tool_content(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_tool_content(v) for v in value]
+    return value
+
+
 def run_pipeline(
     audio: np.ndarray,
     sample_rate: int,
@@ -53,6 +84,7 @@ def run_pipeline(
     cancel: threading.Event,
     emit: Callable[[Event], None],
 ) -> None:
+    pending_image: str | None = None  # pipeline-owned temp screenshot PNG, if any
     try:
         t0 = time.perf_counter()
         if cancel.is_set():
@@ -109,9 +141,21 @@ def run_pipeline(
         for round_no in range(deps.max_tool_rounds + 1):
             last = round_no == deps.max_tool_rounds
             parser = ToolCallParser()
-            # tools=None on the last round forces a spoken answer instead of a call.
+            # A non-None pending_image means the PREVIOUS round's tool captured
+            # the screen (ToolResult.image_path): THIS round is its continuation.
+            # Hand the capture to the vision engine via image_path and withhold
+            # tools -- a screenshot turn is terminal for tool-calling, the model
+            # answers ABOUT the image and must not chain another tool -- so tools
+            # are forced off here exactly as on the final round. The image rides
+            # image_path only; the role:"tool" message content stays unchanged.
+            image_this_round = pending_image
+            # tools=None on the last round (or an image round) forces a spoken
+            # answer instead of a call.
             for delta in deps.llm.stream(
-                messages, think=deps.think, tools=None if last else offered
+                messages,
+                think=deps.think,
+                tools=None if (last or image_this_round is not None) else offered,
+                image_path=image_this_round,
             ):
                 if cancel.is_set():
                     return
@@ -173,6 +217,16 @@ def run_pipeline(
                         content={"error": f"{type(exc).__name__}: {exc}"},
                         summary="tool call failed",
                     )
+            # The image fed into THIS round's stream (if any) has been consumed;
+            # release it before adopting this round's own capture, so a
+            # tools-withheld image round that still emitted a call cannot strand
+            # the prior PNG. result.image_path is set only by screenshot-like
+            # tools (None otherwise); record it as the pending capture BEFORE the
+            # post-execute cancel check, so a barge-in between capture and the
+            # image stream still frees the file in `finally`.
+            if image_this_round is not None:
+                _unlink_quietly(image_this_round)
+            pending_image = result.image_path
             if cancel.is_set():
                 return
             deps.on_tool_result(call.name, result.ok, result.summary)
@@ -198,7 +252,12 @@ def run_pipeline(
                     # crashing the continuation render with UndefinedError. A JSON
                     # string renders correctly. ToolResult.content stays a dict as
                     # the tools API; this one site is where it meets the template.
-                    "content": json.dumps(result.content),
+                    # _sanitize_tool_content strips template-control markers from
+                    # every string first (injection hardening: result.content can
+                    # carry untrusted web text that must not be able to forge a
+                    # fake tool_response or open a reasoning block — see
+                    # strip_special_markers).
+                    "content": json.dumps(_sanitize_tool_content(result.content)),
                 },
             ]
         if cancel.is_set():
@@ -228,3 +287,13 @@ def run_pipeline(
         if not cancel.is_set():
             traceback.print_exc()  # the event carries only str(exc); keep the stack visible
             emit(Event(EventType.PIPELINE_ERROR, message=f"{type(exc).__name__}: {exc}"))
+    finally:
+        # The pipeline owns a screenshot tool's success-path temp PNG the moment
+        # ToolResult.image_path is set (the tool cleans only its OWN failure
+        # paths). Free it after the image continuation round consumes it AND on
+        # every early-return / exception path that abandons the turn once a
+        # capture exists -- a barge-in between capture and the image stream, or
+        # cancel/exception during that stream. pending_image is None outside that
+        # live region, so this is a no-op for every non-screenshot turn.
+        if pending_image is not None:
+            _unlink_quietly(pending_image)

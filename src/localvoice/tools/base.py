@@ -8,6 +8,12 @@ class ToolResult:
     ok: bool
     content: dict      # becomes the role:"tool" message content (template renders mappings)
     summary: str       # one human line for the protocol event, e.g. "found 5 results"
+    # Set on success by image-producing tools (e.g. ScreenshotTool/look_at_screen);
+    # None for every other tool and for any failed result. A tool that sets this
+    # only ever creates the file -- ownership of deleting it belongs to whatever
+    # feeds it into the LLM engine downstream. Default keeps every existing
+    # ToolResult(...) construction (web.py, pipeline.py's error paths) valid.
+    image_path: str | None = None
 
 
 class Tool(Protocol):

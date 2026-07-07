@@ -3,7 +3,9 @@ from localvoice.config import ToolsConfig
 
 def registry_for(cfg: ToolsConfig) -> list:
     """Enabled tools only; empty when cfg.enabled is False. T1 registers
-    WebSearchTool and FetchPageTool (both gated on cfg.web_search)."""
+    WebSearchTool and FetchPageTool (both gated on cfg.web_search). T3 adds
+    ScreenshotTool (gated on cfg.screenshot); it's filtered back out at the
+    offer site in app.py for engines that can't consume the image it produces."""
     if not cfg.enabled:
         return []
 
@@ -17,5 +19,12 @@ def registry_for(cfg: ToolsConfig) -> list:
 
         tools.append(WebSearchTool(cfg))
         tools.append(FetchPageTool(cfg))
+
+    if cfg.screenshot:
+        # Lazy import for the same reason as above: screencapture/sips are
+        # macOS-only tools, kept out of the import graph when disabled.
+        from localvoice.tools.screenshot import ScreenshotTool
+
+        tools.append(ScreenshotTool(cfg))
 
     return tools

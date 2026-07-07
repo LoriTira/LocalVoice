@@ -391,6 +391,11 @@ def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path
        turn run immediately afterward still produces real text through the
        ordinary hybrid (_TextTowerAdapter) path, proving the image turn left
        no wreckage for it to trip over.
+    3. (T3 Task 1) A second image turn with think=True proves the two
+       retired T2 scope cuts on the real model: reasoning streamed as
+       Gemma's <|channel>thought is surfaced as canonical <think>, and the
+       max_tokens budget bump (+ think_tokens) leaves room for a real answer
+       to still follow it instead of exhausting the budget mid-reasoning.
     """
     from localvoice.llm.mlx_vlm_engine import MlxVlmEngine
 
@@ -433,3 +438,22 @@ def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path
     )
     assert text_reply.strip(), "text turn after an image turn produced no text"
     assert engine._cache[0].offset > 0  # the text turn prefilled normally
+
+    # think=True on an image turn (T3 Task 1): reasoning must translate to
+    # canonical <think> tags exactly like a text turn -- the exact
+    # reasoning-read-aloud bug class this project has fixed twice, now
+    # guarded on the image path too -- and the actual answer must still
+    # follow it. That second half is proof the max_tokens budget bump
+    # (self._cfg.max_tokens + think_tokens) landed: without it, a thinking
+    # image turn can exhaust its (unbumped) budget mid-reasoning and yield
+    # an empty answer.
+    thinking_reply = "".join(
+        engine.stream(
+            [{"role": "user", "content": "What color is this image? Answer with one word."}],
+            think=True,
+            image_path=str(png),
+        )
+    )
+    assert "<think>" in thinking_reply, f"no translated reasoning: {thinking_reply!r}"
+    answer = thinking_reply.split("</think>", 1)[-1]
+    assert "red" in answer.lower(), f"expected 'red' after </think>, got: {thinking_reply!r}"

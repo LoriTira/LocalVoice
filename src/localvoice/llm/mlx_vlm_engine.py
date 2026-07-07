@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from localvoice.config import LlmConfig
 from localvoice.llm.base import Message
 from localvoice.llm.mlx_lm_engine import _stream_text, is_channel_style, supports_tools
+from localvoice.textproc.sanitize import ChannelThinkTranslator
 
 
 class _TextTowerAdapter:
@@ -41,6 +42,12 @@ class MlxVlmEngine:
     supplies the caller (a screenshot tool feeding a captured PNG back in);
     this task wires the minimal entry point it calls.
     """
+
+    # Vision-capable: this is the one engine T3's screenshot tool can be
+    # offered to. A plain class attribute -- unlike supports_tools, this
+    # never depends on the loaded chat template, so it needs no load() to
+    # be read (Task 3 gates tool-offering on it).
+    supports_images = True
 
     def __init__(self, cfg: LlmConfig) -> None:
         self._cfg = cfg
@@ -174,22 +181,27 @@ class MlxVlmEngine:
                 num_images=1,
             )
 
+        # Same parity as _stream_text: channel-style models (Gemma 4) stream
+        # reasoning as <|channel>thought ... <channel|>; translate to the
+        # canonical <think> tags so a spontaneously opened thought channel on
+        # an image turn is never read aloud unmarked. One instance per
+        # stream, always active for such models (not just when think=True).
+        translator = ChannelThinkTranslator() if self._channel_style else None
         try:
             for result in stream_generate(
                 self._model,
                 self._processor,
                 prompt,
                 image=image_path,
-                # T2 scope cut, T3 must revisit: no `+ think_tokens` budget
-                # bump here (unlike _stream_text) — a thinking image turn can
-                # exhaust its budget mid-reasoning and yield an empty answer.
-                max_tokens=self._cfg.max_tokens,
+                # Same budget as _stream_text: bump by think_tokens so a
+                # thinking image turn doesn't exhaust its budget mid-reasoning
+                # and yield an empty answer.
+                max_tokens=self._cfg.max_tokens + (self._cfg.think_tokens if think else 0),
             ):
-                # T2 scope cut, T3 MUST fix before wiring this into the
-                # pipeline: the raw text skips ChannelThinkTranslator, so a
-                # spontaneously opened <|channel>thought block would flow to
-                # callers unmarked — on a spoken path that is the reasoning-
-                # read-aloud bug all over again, on image turns.
-                yield result.text
+                yield translator.feed(result.text) if translator else result.text
+            if translator is not None:
+                tail = translator.finish()
+                if tail:
+                    yield tail
         finally:
             self._reset_cache()

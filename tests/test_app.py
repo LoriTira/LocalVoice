@@ -5,6 +5,7 @@ from localvoice.config import KeysConfig, ToolsConfig
 from localvoice.events import Event
 from localvoice.events import EventType as E
 from localvoice.events import State as S
+from localvoice.tools.screenshot import ScreenshotTool
 from localvoice.transcript import Transcript
 from tests.fakes import EchoTool, FakeLLM, FakePlayer, FakeSTT, FakeTTS, ScriptedToolLLM
 
@@ -192,3 +193,45 @@ def test_tools_cfg_hot_applies_at_the_start_of_the_next_turn():
     tools_cfg.enabled = False  # mirrors set_config's live-object mutation
     _run_one_turn(orch)
     assert llm.calls[1]["tools"] is None
+
+
+def _tool_names(llm) -> list[str]:
+    return [t["function"]["name"] for t in llm.calls[0]["tools"]]
+
+
+def test_image_tool_withheld_from_engine_without_supports_images():
+    """Global Constraints extended for T3: an image-producing tool
+    (ScreenshotTool.needs_image_engine = True) must never be offered to an
+    engine that cannot consume the image it produces, even when the engine
+    otherwise supports tool calling and the tool is registered/enabled."""
+    web_tool = EchoTool()
+    image_tool = ScreenshotTool(ToolsConfig(screenshot=True))
+    tools_cfg = ToolsConfig(enabled=True, screenshot=True)
+    llm = ScriptedToolLLM([["Answer."]], supports_tools=True, supports_images=False)
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"), llm=llm, tts=FakeTTS(),
+        transcript=transcript, keys_cfg=KeysConfig(), tools_cfg=tools_cfg,
+        tools_factory=lambda cfg: [web_tool, image_tool], status=lambda s: None,
+    )
+    _run_one_turn(orch)
+    names = _tool_names(llm)
+    assert "look_at_screen" not in names
+    assert "web_search" in names  # a non-image tool is unaffected by the gate
+
+
+def test_image_tool_offered_when_engine_supports_images():
+    web_tool = EchoTool()
+    image_tool = ScreenshotTool(ToolsConfig(screenshot=True))
+    tools_cfg = ToolsConfig(enabled=True, screenshot=True)
+    llm = ScriptedToolLLM([["Answer."]], supports_tools=True, supports_images=True)
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"), llm=llm, tts=FakeTTS(),
+        transcript=transcript, keys_cfg=KeysConfig(), tools_cfg=tools_cfg,
+        tools_factory=lambda cfg: [web_tool, image_tool], status=lambda s: None,
+    )
+    _run_one_turn(orch)
+    names = _tool_names(llm)
+    assert "look_at_screen" in names
+    assert "web_search" in names

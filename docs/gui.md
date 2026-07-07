@@ -304,7 +304,7 @@ applies the change to the running process per this table (spec §5):
 | `llm.model`, `llm.deep_model`, `stt.model`, `tts.model`, any `*.engine` (`llm.engine`: `mlx_lm` \| `mlx_vlm`) | The named engine (`stt`/`llm`/`tts`) is reloaded on the single inference thread — same thread every load and pipeline run uses — emitting `load_progress(start)`/`load_progress(done)`. Conversation history is untouched; a turn already in flight keeps running on the old engine instance until it finishes (reloads queue behind it on the same thread). | `reloaded: ["llm"]` (etc., in `stt, llm, tts` order, deduped) |
 | `audio.input_device`, `audio.output_device`, `audio.rebuffer_ms` | Player and capture streams are stopped and restarted. | `reloaded: []`, but the restart itself can emit `error` if the new device is unavailable |
 | `keys.ptt`, `keys.stop` | Stored on the live config for terminal-mode (`localvoice run`) use; **the GUI owns the actual key tap in Swift** and applies these client-side. `serve` does not install any hotkey listener. *Caveat: the v1 app hard-codes right-⌘/Esc in `HotkeyMonitor` and does not yet read these — configurable keys are a later phase.* | `reloaded: []` |
-| `tools.enabled`, `tools.web_search`, `tools.max_rounds`, `tools.search_results`, `tools.page_char_cap` | Applied immediately on the live config object. No reload, no audio restart. | `reloaded: []` |
+| `tools.enabled`, `tools.web_search`, `tools.screenshot`, `tools.max_rounds`, `tools.search_results`, `tools.page_char_cap` | Applied immediately on the live config object. No reload, no audio restart. `tools.screenshot` toggles the same way, but `look_at_screen` is only ever offered to the model when the loaded `llm` engine can consume an image (`llm.engine = "mlx_vlm"` today) — on a text-only engine the bit is stored and reflected in `config_applied` like any other value, yet the tool never appears in a turn's `tool_call`. | `reloaded: []` |
 
 A `set_config` call can touch fields from more than one row at once (e.g.
 `{"llm.think": true, "llm.model": "..."}`); each row's action runs for the
@@ -324,6 +324,22 @@ audio restart. `tool_call`/`tool_result` events only occur when the active
 model's chat template actually supports tool calling — a template without
 tool-call rendering is never offered tools regardless of `tools.enabled`,
 so a client should not expect these two events from every model.
+
+A `look_at_screen` round is a special case of the same tool-round
+machinery: its result carries the captured screenshot's temp-file path,
+but only engine-internally (`ToolResult.image_path`, never a `tool_result`
+payload field over the wire) — the *next* LLM turn receives it as an image
+via the LLM engine's own image parameter, while the `role: "tool"` message
+content stays the same sanitized JSON string as any other tool result, so
+the path itself never appears in the prompt or on the wire. Tools are
+withheld on that image turn (`tools = None`), so the model is steered to
+answer about what it saw rather than chain another call — but exactly as on
+the final round of `max_rounds`, a tool marker the model emits anyway is
+still parsed and executed, so a client may occasionally observe a second
+`tool_call`/`tool_result` pair; the loop stays bounded by `max_rounds` and
+every captured PNG is still cleaned up. The temporary PNG is deleted the moment that turn ends —
+normally, cancelled, or errored — so nothing about it outlives the turn
+that produced it.
 
 ## Driving it manually
 
