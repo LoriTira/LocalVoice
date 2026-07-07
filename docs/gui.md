@@ -331,10 +331,13 @@ but only engine-internally (`ToolResult.image_path`, never a `tool_result`
 payload field over the wire) — the *next* LLM turn receives it as an image
 via the LLM engine's own image parameter, while the `role: "tool"` message
 content stays the same sanitized JSON string as any other tool result, so
-the path itself never appears in the prompt or on the wire. That image
-turn is terminal for tool-calling: the model can only answer about what it
-saw, never chain another call, exactly like the final round of
-`max_rounds`. The temporary PNG is deleted the moment that turn ends —
+the path itself never appears in the prompt or on the wire. Tools are
+withheld on that image turn (`tools = None`), so the model is steered to
+answer about what it saw rather than chain another call — but exactly as on
+the final round of `max_rounds`, a tool marker the model emits anyway is
+still parsed and executed, so a client may occasionally observe a second
+`tool_call`/`tool_result` pair; the loop stays bounded by `max_rounds` and
+every captured PNG is still cleaned up. The temporary PNG is deleted the moment that turn ends —
 normally, cancelled, or errored — so nothing about it outlives the turn
 that produced it.
 
