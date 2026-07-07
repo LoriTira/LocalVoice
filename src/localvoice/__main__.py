@@ -47,11 +47,11 @@ def _load_config(args):
 
 
 def _make_engines(cfg):
-    from localvoice.llm.mlx_lm_engine import MlxLmEngine
+    from localvoice.llm import build_llm_engine
     from localvoice.stt.whisper_mlx import WhisperMlxEngine
     from localvoice.tts.kokoro_mlx import KokoroMlxEngine
 
-    return WhisperMlxEngine(cfg.stt), MlxLmEngine(cfg.llm), KokoroMlxEngine(cfg.tts)
+    return WhisperMlxEngine(cfg.stt), build_llm_engine(cfg.llm), KokoroMlxEngine(cfg.tts)
 
 
 def _load_timed(name: str, engine, inference=None) -> None:

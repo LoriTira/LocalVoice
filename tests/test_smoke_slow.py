@@ -253,3 +253,183 @@ def test_gemma_template_renders_tool_round_continuation():
         tok.apply_chat_template(
             sequence(result_content), tools=tools, add_generation_prompt=True, tokenize=False
         )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not GEMMA_LLM.exists(), reason="Gemma vision-capable model not present")
+def test_mlx_vlm_hybrid_text_parity_and_prefix_reuse():
+    """The hybrid engine's whole reason to exist: load Gemma 4 through mlx-vlm
+    (vision-capable) yet drive TEXT turns through mlx_lm.stream_generate against
+    the language tower via _TextTowerAdapter — with prefix reuse across turns and
+    channel->think translation intact. Proves, on the real model:
+
+      1. hybrid generation produces real text (the adapter bridges the tower's
+         LanguageModelOutput to the raw logits the mlx-lm loop consumes),
+      2. the tower's prompt cache actually advances and is reused next turn
+         (cache offset > 0 before turn 2, with a real common prefix to reuse) —
+         the latency win the hybrid is chosen for,
+      3. reasoning streamed as Gemma's <|channel>thought is surfaced as the
+         canonical <think> the downstream TextFilter speaks.
+    """
+    from localvoice.llm.mlx_lm_engine import _apply_template, common_prefix_len
+    from localvoice.llm.mlx_vlm_engine import MlxVlmEngine
+
+    engine = MlxVlmEngine(LlmConfig(model=str(GEMMA_LLM), max_tokens=24))
+    engine.load()
+
+    system = {"role": "system", "content": "Answer in one short sentence."}
+    user1 = {"role": "user", "content": "What color is the sky on a clear day?"}
+
+    # Turn 1: fresh prefill through the hybrid path must yield real text.
+    reply1 = "".join(engine.stream([system, user1], think=False))
+    assert reply1.strip(), "hybrid turn 1 produced no text"
+
+    # The tower's cache now holds turn-1 prompt + generated tokens. Prefix reuse
+    # can only engage if that offset actually advanced — the load-bearing proof
+    # that the adapter drove real generation over a shared cache.
+    assert engine._cache[0].offset > 0
+
+    assistant1 = {"role": "assistant", "content": reply1.strip()}
+    user2 = {"role": "user", "content": "And at night?"}
+    msgs2 = [system, user1, assistant1, user2]
+
+    # Turn 2 shares a real prefix (system + first exchange) with what the cache
+    # already holds, so _stream_text trims (offset - common) and re-prefills only
+    # the diverged tail instead of the whole conversation.
+    turn2_tokens = _apply_template(engine._tokenizer, msgs2, False, None)
+    reused = common_prefix_len(turn2_tokens, engine._prompt_tokens)
+    assert reused > 0, "no reusable prefix — the hybrid would re-prefill every turn"
+    assert engine._cache[0].offset > 0  # prefix-reuse path is armed before the call
+
+    # Spy (not stub) on _reset_cache across turn 2: real behavior must still
+    # run (turn 3 below reuses this same engine), but with a genuine reusable
+    # prefix and a trimmable cache (Gemma's is a plain KVCache,
+    # can_trim_prompt_cache-compatible), _stream_text must take the trim
+    # branch, never the reset/re-prefill-from-scratch one. Asserting on
+    # reused/offset above proves the trim branch's PRECONDITIONS hold; this
+    # pins the branch itself, directly, against the regression where a future
+    # change makes it reset unconditionally and silently loses the latency
+    # win prefix reuse exists for, without any of the other assertions here
+    # (which only check the final text/offset, not which path produced them)
+    # catching it.
+    real_reset_cache = engine._reset_cache
+    reset_calls = {"n": 0}
+
+    def _spy_reset_cache() -> None:
+        reset_calls["n"] += 1
+        real_reset_cache()
+
+    engine._reset_cache = _spy_reset_cache
+
+    reply2 = "".join(engine.stream(msgs2, think=False))
+    assert reply2.strip(), "hybrid turn 2 produced no text"
+    assert reset_calls["n"] == 0, (
+        "turn 2 had a real reusable prefix and a trimmable cache -- "
+        "_stream_text must trim it, never reset/re-prefill from scratch"
+    )
+
+    # Think turn: Gemma streams reasoning as <|channel>thought…; the engine's
+    # always-on ChannelThinkTranslator must surface it as a canonical <think>
+    # in the raw stream. Break as soon as the tag appears (it opens near the
+    # start) so we never generate the full think budget.
+    think_sys = {"role": "system", "content": "Reason step by step before answering."}
+    think_user = {"role": "user", "content": "Is 91 a prime number?"}
+    joined = ""
+    for i, delta in enumerate(engine.stream([think_sys, think_user], think=True)):
+        joined += delta
+        if "<think>" in joined or i > 80:
+            break
+    assert "<think>" in joined, f"no translated reasoning in stream: {joined!r}"
+
+
+def _write_solid_png(path: Path, width: int, height: int, rgb: tuple[int, int, int]) -> None:
+    """Pure-python PNG writer for a single solid-color RGB image.
+
+    No PIL/numpy needed for a fixture this trivial: one IHDR (8-bit truecolor,
+    no palette/interlace), one IDAT (zlib-compressed scanlines, each prefixed
+    with filter-type 0 = None — correct and simplest for a flat color), one
+    IEND. Every multi-byte PNG field is big-endian per spec; struct.pack(">..")
+    handles that, zlib.compress gives the zlib-wrapped (not raw) deflate
+    stream IDAT requires, and zlib.crc32 is the exact CRC-32 variant PNG
+    chunks use.
+    """
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    row = bytes([0]) + bytes(rgb) * width  # filter-type byte + width RGB pixels
+    raw = row * height
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # depth 8, color type 2 (RGB)
+    png = (
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(
+            b"IEND", b""
+        )
+    )
+    path.write_bytes(png)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not GEMMA_LLM.exists(), reason="Gemma vision-capable model not present")
+def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path):
+    """Task 4's minimal image entry point (T3's hook), proven on the real model.
+
+    1. stream(..., image_path=...) drives mlx-vlm's own generation
+       (_stream_image, NOT the text-tower adapter) against a real solid-red
+       fixture image, end-to-end through the real Gemma 4 vision tower.
+    2. The cache-interaction decision documented in _stream_image's docstring
+       is verified live, not just by source-reading: mlx-vlm never receives
+       self._cache for an image turn (it builds and discards its own scratch
+       cache), so the persisted TEXT-turn cache is untouched by the image
+       call other than the engine's own defensive reset — and a plain TEXT
+       turn run immediately afterward still produces real text through the
+       ordinary hybrid (_TextTowerAdapter) path, proving the image turn left
+       no wreckage for it to trip over.
+    """
+    from localvoice.llm.mlx_vlm_engine import MlxVlmEngine
+
+    png = tmp_path / "red.png"
+    _write_solid_png(png, 64, 64, (255, 0, 0))
+
+    engine = MlxVlmEngine(LlmConfig(model=str(GEMMA_LLM), max_tokens=32))
+    engine.load()
+    assert engine._cache[0].offset == 0  # nothing prefilled yet
+
+    # DIRTY the text cache first: a fresh-load offset of 0 would make the
+    # post-image assertion pass even if the reset were deleted, guarding
+    # nothing. A real TEXT turn populates the cache (offset > 0), so the
+    # zero-offset check after the image turn genuinely pins the reset.
+    warmup = "".join(
+        engine.stream([{"role": "user", "content": "Say the word hello."}], think=False)
+    )
+    assert warmup.strip()
+    assert engine._cache[0].offset > 0  # text turn left real prefill state
+
+    reply = "".join(
+        engine.stream(
+            [{"role": "user", "content": "What color is this image? Answer with one word."}],
+            think=False,
+            image_path=str(png),
+        )
+    )
+    assert "red" in reply.lower(), f"expected 'red' in the model's answer, got: {reply!r}"
+
+    # The image turn must leave the persisted TEXT-turn cache reset to a
+    # clean zero offset (the finally: _reset_cache() in _stream_image) —
+    # meaningful now precisely because the warmup turn dirtied it above.
+    assert engine._cache[0].offset == 0
+    assert engine._prompt_tokens == []
+
+    # A plain TEXT turn right after must still work through the ordinary
+    # hybrid path — proof the image turn didn't wedge the engine.
+    text_reply = "".join(
+        engine.stream([{"role": "user", "content": "Say hello in one word."}], think=False)
+    )
+    assert text_reply.strip(), "text turn after an image turn produced no text"
+    assert engine._cache[0].offset > 0  # the text turn prefilled normally

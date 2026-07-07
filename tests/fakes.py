@@ -21,6 +21,7 @@ class FakeLLM:
         self.last_messages: list[dict] | None = None
         self.last_think: bool | None = None
         self.last_tools: list[dict] | None = None
+        self.last_image_path: str | None = None
         # Mirrors MlxLmEngine: real engines only gain this attribute once
         # load() has run. Set here (not deferred to load()) so tests can
         # construct a FakeLLM and read supports_tools without a load() call,
@@ -31,11 +32,17 @@ class FakeLLM:
         pass
 
     def stream(
-        self, messages: list[dict], *, think: bool, tools: list[dict] | None = None
+        self,
+        messages: list[dict],
+        *,
+        think: bool,
+        tools: list[dict] | None = None,
+        image_path: str | None = None,
     ) -> Iterator[str]:
         self.last_messages = messages
         self.last_think = think
         self.last_tools = tools
+        self.last_image_path = image_path
         yield from self.deltas
 
 

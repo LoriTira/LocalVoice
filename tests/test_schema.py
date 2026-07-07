@@ -76,3 +76,18 @@ def test_coerce_rejects_unknown_key_and_bad_value():
         coerce("nope.key", 1)
     with pytest.raises(ConfigError, match="llm.max_tokens"):
         coerce("llm.max_tokens", "not-a-number")
+
+
+def test_coerce_rejects_unknown_llm_engine_before_any_write():
+    """A set_config for llm.engine must be validated against the known engine
+    set BEFORE the caller ever gets to persist it to the overlay -- an
+    unknown value here previously wrote straight through and only surfaced
+    as a ConfigError at the next boot, deep inside EngineSet construction,
+    with no protocol event able to report it."""
+    with pytest.raises(ConfigError, match="llm.engine"):
+        coerce("llm.engine", "bogus")
+
+
+@pytest.mark.parametrize("value", ["mlx_lm", "mlx_vlm"])
+def test_coerce_accepts_known_llm_engine_values(value):
+    assert coerce("llm.engine", value) == value

@@ -31,13 +31,13 @@ def _speech_fixture(seconds: float = 4.0) -> np.ndarray:
 
 
 def run_bench(cfg: Config, runs: int = 3) -> None:
-    from localvoice.llm.mlx_lm_engine import MlxLmEngine
+    from localvoice.llm import build_llm_engine
     from localvoice.stt.whisper_mlx import WhisperMlxEngine
     from localvoice.textproc.chunker import ClauseChunker
     from localvoice.textproc.sanitize import TextFilter
     from localvoice.tts.kokoro_mlx import KokoroMlxEngine
 
-    stt, llm, tts = WhisperMlxEngine(cfg.stt), MlxLmEngine(cfg.llm), KokoroMlxEngine(cfg.tts)
+    stt, llm, tts = WhisperMlxEngine(cfg.stt), build_llm_engine(cfg.llm), KokoroMlxEngine(cfg.tts)
     for name, engine in (("whisper", stt), ("llm", llm), ("kokoro", tts)):
         t0 = time.perf_counter()
         engine.load()
