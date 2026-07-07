@@ -13,7 +13,7 @@ from localvoice.events import Event, EventType
 from localvoice.llm.base import LLMEngine
 from localvoice.stt.base import STTEngine
 from localvoice.textproc.chunker import ClauseChunker
-from localvoice.textproc.sanitize import TextFilter, strip_speech_markup
+from localvoice.textproc.sanitize import TextFilter, strip_special_markers, strip_speech_markup
 from localvoice.textproc.toolcalls import ToolCall, ToolCallParser
 from localvoice.tools.base import ToolResult, hf_tool_schema
 from localvoice.transcript import Transcript
@@ -44,6 +44,26 @@ class PipelineDeps:
 
 def _call_summary(call: ToolCall, malformed: bool) -> str:
     return "Malformed tool call" if malformed else f"Calling {call.name}"
+
+
+def _sanitize_tool_content(value: Any) -> Any:
+    """Recursively strip chat-template control markers from every string in a
+    tool result, before it becomes role:"tool" message content. Tool content
+    can originate from untrusted sources (web_search/fetch_page pull raw page
+    text) and apply_chat_template renders marker strings like
+    ``<|tool_response>`` or ``<think>`` as real special tokens rather than
+    literal text -- a hostile page could otherwise forge a fake tool response
+    or open a reasoning block in the continuation prompt. Applied uniformly
+    at the one message-construction site regardless of which branch produced
+    the result (executed tool, malformed call, unknown tool, or exception),
+    so nothing tool-specific has to remember to sanitize itself."""
+    if isinstance(value, str):
+        return strip_special_markers(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_tool_content(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_tool_content(v) for v in value]
+    return value
 
 
 def run_pipeline(
@@ -198,7 +218,12 @@ def run_pipeline(
                     # crashing the continuation render with UndefinedError. A JSON
                     # string renders correctly. ToolResult.content stays a dict as
                     # the tools API; this one site is where it meets the template.
-                    "content": json.dumps(result.content),
+                    # _sanitize_tool_content strips template-control markers from
+                    # every string first (injection hardening: result.content can
+                    # carry untrusted web text that must not be able to forge a
+                    # fake tool_response or open a reasoning block — see
+                    # strip_special_markers).
+                    "content": json.dumps(_sanitize_tool_content(result.content)),
                 },
             ]
         if cancel.is_set():

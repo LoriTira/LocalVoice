@@ -200,6 +200,37 @@ class TextFilter:
             self._on_think(text)
 
 
+_SPECIAL_MARKER_RE = re.compile(r"<\|[^|>]{0,32}\|?>")
+_BARE_SPECIAL_MARKERS = (
+    "<channel|>",
+    "<tool_call|>",
+    "<tool_response|>",
+    "<turn|>",
+    _THINK_OPEN,
+    _THINK_CLOSE,
+)
+
+
+def strip_special_markers(text: str) -> str:
+    """Strip chat-template control-token sequences from untrusted text.
+
+    Tool results (web_search/fetch_page) carry raw page text into a
+    role:"tool" message's content, which apply_chat_template renders as part
+    of the prompt. Marker strings like ``<|tool_response>`` or ``<think>``
+    are not template *syntax* the renderer parses -- they are literal special
+    tokens in the model's vocabulary, so a hostile page could forge a fake
+    tool response or open/close a reasoning block simply by including the
+    right substring. This removes exactly those marker sequences (the
+    ``<|...|>``/``<|...>`` family plus the bare closing forms and
+    ``<think>``/``</think>``) and leaves every other character -- including
+    standalone ``<``, ``|``, ``>`` -- untouched.
+    """
+    text = _SPECIAL_MARKER_RE.sub("", text)
+    for marker in _BARE_SPECIAL_MARKERS:
+        text = text.replace(marker, "")
+    return text
+
+
 def strip_speech_markup(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
