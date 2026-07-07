@@ -97,15 +97,37 @@ def _lookup(key: str) -> tuple[str, type, str]:
     raise ConfigError(f"unknown config key: {key}")
 
 
+# Keys whose valid values are a known, closed set beyond "matches the field's
+# type" -- today only llm.engine, since build_llm_engine (localvoice.llm)
+# dispatches on it and raises ConfigError for anything else. stt.engine/
+# tts.engine are deliberately NOT here: each has exactly one implementation
+# today with no dispatch, so there is no "unknown value" for them to reject.
+# Checked here, before set_config ever writes to the overlay (localvoice.
+# serve.Serve._set_config coerces every change first) -- an unknown value
+# previously wrote straight through and only surfaced as a ConfigError at the
+# NEXT boot, deep inside EngineSet construction, with no protocol event yet
+# able to report it (see Serve._build_engines for the boot-time half of that
+# fix, covering values already persisted before this check existed).
+_ENGINE_CHOICES: dict[str, frozenset[str]] = {
+    "llm.engine": frozenset({"mlx_lm", "mlx_vlm"}),
+}
+
+
 def coerce(key: str, raw: object) -> object:
     _, t, _ = _lookup(key)
     try:
         if t is bool:
             if isinstance(raw, bool):
-                return raw
-            if isinstance(raw, str) and raw.lower() in ("true", "false"):
-                return raw.lower() == "true"
-            raise ValueError(raw)
-        return t(raw)
+                value = raw
+            elif isinstance(raw, str) and raw.lower() in ("true", "false"):
+                value = raw.lower() == "true"
+            else:
+                raise ValueError(raw)
+        else:
+            value = t(raw)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"bad value for {key}: {raw!r}") from exc
+    choices = _ENGINE_CHOICES.get(key)
+    if choices is not None and value not in choices:
+        raise ConfigError(f"bad value for {key}: {raw!r} (must be one of {sorted(choices)})")
+    return value

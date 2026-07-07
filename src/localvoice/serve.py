@@ -55,7 +55,8 @@ class Serve:
         self._inference = inference or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="inference"
         )
-        self._engines = engine_set or EngineSet(cfg)
+        self._boot_error: str | None = None
+        self._engines = engine_set if engine_set is not None else self._build_engines(cfg)
         self._emit_lock = threading.Lock()
         self._engines_ready = False
         self._exit = os._exit
@@ -103,6 +104,33 @@ class Serve:
         d.on_tool_result = lambda name, ok, summary: self.emit(
             {"event": "tool_result", "name": name, "ok": ok, "summary": summary}
         )
+
+    def _build_engines(self, cfg: Config) -> EngineSet:
+        """Construct the default EngineSet, surviving a persisted-but-invalid
+        llm.engine value.
+
+        schema.coerce now rejects an unknown llm.engine before set_config
+        ever writes it to the overlay, but that guard cannot help a value
+        already sitting in localvoice.local.toml (hand-edited, or written by
+        an older build before that check existed) -- EngineSet(cfg) calls
+        build_llm_engine eagerly, which raises ConfigError, and that used to
+        propagate straight out of Serve.__init__: no `Serve` instance, no
+        `ready` event, nothing at all on the protocol stream for a client to
+        act on. Falling back to the mlx_lm default for THIS session (never
+        rewriting the overlay file itself) keeps serve alive far enough to
+        reach run()'s ready/error emission -- the GUI's Settings pane stays
+        reachable, and the user can set_config a valid engine to fix it for
+        real, persisting through the overlay same as any other change.
+        """
+        try:
+            return EngineSet(cfg)
+        except ConfigError as exc:
+            bad = cfg.llm.engine
+            self._boot_error = (
+                f"invalid llm.engine {bad!r}: {exc}; falling back to mlx_lm for this session"
+            )
+            cfg.llm.engine = "mlx_lm"
+            return EngineSet(cfg)
 
     def _status(self, line: str) -> None:
         """Orchestrator status sink for serve/GUI mode. Every user-facing signal
@@ -166,6 +194,8 @@ class Serve:
                 "schema": build_schema(self._cfg),
             }
         )
+        if self._boot_error:
+            self.emit({"event": "error", "message": self._boot_error})
         try:
             self._capture.start()
             self._player.start()

@@ -710,6 +710,51 @@ def test_ptt_down_before_engines_ready_yields_error(tmp_path):
     assert s._engines_ready
 
 
+def test_boot_survives_persisted_invalid_llm_engine(tmp_path):
+    """Regression guard for the review finding that a persisted-but-invalid
+    llm.engine value (e.g. a hand-edited overlay, or one written before
+    schema.coerce's validation existed) bricks boot: build_llm_engine raises
+    ConfigError inside EngineSet's construction, and that used to propagate
+    straight out of Serve.__init__ -- before a single protocol event could be
+    written, so the process would exit (and a supervising GUI would
+    respawn-loop it) with Settings never reachable to fix the value. Serve
+    must instead fall back to the mlx_lm default for THIS session, report the
+    problem as a normal `error` event once run() starts emitting, and keep
+    going -- letting the user fix the value via set_config, which persists
+    correctly through the overlay (Fix 1a validates that path separately).
+
+    No engine_set= is passed, so Serve's own default EngineSet(cfg) -- using
+    the REAL default factories (WhisperMlxEngine/build_llm_engine/
+    KokoroMlxEngine), the thing under test -- is what must survive here, the
+    same real-factories shape as test_engineset.py's
+    test_engineset_rejects_unknown_llm_engine. Those constructors are cheap
+    (no I/O; only .load() touches MLX/network), and inference=ManualExecutor
+    defers the boot load job so it never actually runs .load() on them.
+    """
+    cfg = Config(
+        SttConfig(), LlmConfig(engine="bogus"), TtsConfig(), KeysConfig(), AudioConfig(),
+        ToolsConfig(),
+    )
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    stdin = io.StringIO(json.dumps({"cmd": "shutdown"}) + "\n")
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        player=FakePlayer(), capture=FakeCapture(), inference=ManualExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    msgs = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    ready = events_of(msgs, "ready")
+    assert ready, "serve must still emit ready, not crash, on a bad persisted llm.engine"
+    assert ready[0]["config"]["llm"]["engine"] == "mlx_lm"
+    errors = events_of(msgs, "error")
+    assert any("bogus" in m["message"] and "mlx_lm" in m["message"] for m in errors), errors
+    assert s._cfg.llm.engine == "mlx_lm"
+
+
 def test_restart_audio_stops_then_starts_the_player(tmp_path):
     """Backfill regression guard: set_config on an audio.* field (restart_audio
     group) must actually stop() then start() the player -- proving the hot-apply
