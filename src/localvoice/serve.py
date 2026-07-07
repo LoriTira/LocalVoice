@@ -9,11 +9,27 @@ from pathlib import Path
 from localvoice.config import Config, ConfigError, load_config
 from localvoice.engineset import EngineSet, plan_apply
 from localvoice.events import Event, EventType
-from localvoice.overlay import apply_overlay_changes
+from localvoice.overlay import apply_overlay_changes, remove_overlay_keys
 from localvoice.schema import build_schema, coerce
 
 PROTOCOL_VERSION = 1
 _SAMPLE_LINE = "This is what the selected voice sounds like."
+
+
+def _changed_keys(old: Config, new: Config) -> set:
+    """Dotted keys whose value differs between two merged configs. Used by
+    reset_config to feed plan_apply only the fields that actually changed, so
+    clearing an overlay key that already equalled its base default triggers no
+    reload/restart."""
+    from dataclasses import fields
+
+    changed: set = set()
+    for section in fields(Config):
+        old_sec, new_sec = getattr(old, section.name), getattr(new, section.name)
+        for f in fields(type(old_sec)):
+            if getattr(old_sec, f.name) != getattr(new_sec, f.name):
+                changed.add(f"{section.name}.{f.name}")
+    return changed
 
 
 class Serve:
@@ -179,6 +195,8 @@ class Serve:
             self._orch.post(Event(EventType.ESC))
         elif cmd == "set_config":
             self._set_config(msg.get("changes", {}))
+        elif cmd == "reset_config":
+            self._reset_config(msg.get("keep") or [])
         elif cmd == "list_models":
             from localvoice.modelstore import scan_models
 
@@ -204,13 +222,39 @@ class Serve:
             return
         apply_overlay_changes(self._config_path, changes)
         new_cfg = load_config(self._config_path)
-        plan = plan_apply(changes)
+        # set_config's changed-key set is exactly what the client asked to
+        # change; plan_apply keys off dotted names, so the coerced values
+        # themselves are irrelevant to the plan.
+        self._apply_new_config(new_cfg, set(changes))
+
+    def _reset_config(self, keep: list) -> None:
+        """Clear every overlay key except those in `keep`, then route the
+        resulting config diff through the SAME apply path set_config uses.
+        Only keys whose merged value actually changed feed plan_apply, so
+        cleared engine-bound keys reload engines, cleared audio keys restart
+        streams, and cleared instant keys apply — while untouched keys cost
+        nothing. Replies config_applied with the full new merged config."""
+        old_cfg = load_config(self._config_path)
+        try:
+            remove_overlay_keys(self._config_path, keep)
+        except OSError as exc:
+            self.emit({"event": "error", "message": f"reset_config failed: {exc}"})
+            return
+        new_cfg = load_config(self._config_path)
+        changed = _changed_keys(old_cfg, new_cfg)
+        self._apply_new_config(new_cfg, changed)
+
+    def _apply_new_config(self, new_cfg: Config, changed: set) -> None:
+        """Shared back half of set_config/reset_config: given the freshly
+        merged config and the set of dotted keys that changed, run the
+        instant/reload/audio-restart plan and emit config_applied."""
+        plan = plan_apply({k: None for k in changed})
         for key in plan["instant"]:
             section, name = key.split(".", 1)
             setattr(getattr(self._cfg, section), name, getattr(getattr(new_cfg, section), name))
-        if "llm.think" in changes:
+        if "llm.think" in changed:
             self._orch._deps.think = self._cfg.llm.think
-        if "llm.system_prompt" in changes:
+        if "llm.system_prompt" in changed:
             self._orch._transcript.set_system_prompt(self._cfg.llm.system_prompt)
         for name in plan["reload"]:
             self._sync_section(name, new_cfg)

@@ -6,6 +6,9 @@ enum EngineCommand {
     case pttUp(heldMs: Int)
     case esc
     case setConfig([String: JSONValue])
+    /// Clear the overlay back to committed defaults, keeping only the dotted
+    /// keys in `keep`. See `docs/gui.md` § Commands (`reset_config`).
+    case resetConfig(keep: [String])
     case listModels
     case downloadModel(repo: String)
     case previewVoice(voice: String)
@@ -36,6 +39,10 @@ extension EngineCommand {
         case .setConfig(let changes):
             payload["cmd"] = .string("set_config")
             payload["changes"] = .object(changes)
+
+        case .resetConfig(let keep):
+            payload["cmd"] = .string("reset_config")
+            payload["keep"] = .array(keep.map(JSONValue.string))
 
         case .listModels:
             payload["cmd"] = .string("list_models")

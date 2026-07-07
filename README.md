@@ -2,7 +2,8 @@
 
 A local push-to-talk voice assistant for Apple Silicon: hold right ⌘, talk,
 release, and a local LLM answers out loud in under a second — no cloud, no
-voice-activity detection, no waiting for you to stop talking.
+voice-activity detection, no waiting for you to stop talking. It comes as a
+native macOS app and a terminal CLI, both driving the same local engine.
 
 ## How it works
 
@@ -76,7 +77,10 @@ to fix it, rather than failing silently or partway through a conversation.
 ## Configuration
 
 LocalVoice reads `localvoice.toml` from the current directory by default
-(override with `--config path/to/file.toml`). Every key and its default:
+(override with `--config path/to/file.toml`). Every key below is also
+editable live from the app's Settings pane, which includes a **Restore
+defaults** button (it keeps your model assignments — see
+[The app](#the-app)). Every key and its default:
 
 | Section | Key | Default | Meaning |
 |---|---|---|---|
@@ -154,9 +158,11 @@ all run locally via MLX; there is no network call in the conversation path.
 ## Latency
 
 Voice-to-voice is the metric that matters for a push-to-talk assistant: the
-time from releasing the key to hearing the first word of the reply. Target
-budgets per pipeline stage, and how to measure them on your own hardware,
-are in [`docs/latency.md`](docs/latency.md).
+time from releasing the key to hearing the first word of the reply. Measured
+on an M5 Pro (64 GB): **0.82 s** with the default model
+(Qwen3.6-35B-A3B 4-bit) and **1.43 s** in `--deep` mode (Qwen3.6-27B
+6-bit). Target budgets per pipeline stage, the full measured table, and how
+to measure on your own hardware are in [`docs/latency.md`](docs/latency.md).
 
 ## Architecture
 
@@ -178,11 +184,15 @@ strategy, and the phased roadmap, is
 
 `LocalVoice.app` is a native SwiftUI app (macOS 15+) that drives the same
 engine as the CLI, over the line-delimited JSON protocol `localvoice serve`
-speaks on stdio — a Talk view for conversations, a Settings pane generated
-from the engine's own config schema, a Models manager for
-installed/downloadable models, and the same global right-⌘ push-to-talk
-hotkey, all with no functionality the CLI doesn't also have. It lives in
-`app/LocalVoice/` as an Xcode project.
+speaks on stdio — a Talk view with the live transcript, reasoning, mic
+level, and per-turn latency; a Settings pane generated from the engine's
+own config schema (every key editable live, plus a **Restore defaults**
+button that resets everything except your model assignments — the shipped
+default model is a Hugging Face repo id, and resetting to it would trigger
+a multi-GB download, so model choices stay put and are changed in the
+Models tab instead); a Models manager for installed/downloadable models; a
+Setup pane for permissions and engine status; and the same global right-⌘
+push-to-talk hotkey. It lives in `app/LocalVoice/` as an Xcode project.
 
 Build and run it:
 
@@ -215,19 +225,53 @@ will say **LocalVoice** (the app) instead of your terminal — grant those,
 then relaunch the app the same way you'd relaunch a terminal after granting
 them to it.
 
+**If the app sits at "Connecting…" forever**, the engine process is failing
+to start — almost always a stale Python environment rather than anything in
+the app. Refresh it from the repo root and relaunch:
+
+```bash
+uv self update && rm -rf .venv && uv sync
+```
+
+(The first response after a rebuilt environment can take an extra minute
+while TTS re-fetches a small spaCy model.)
+
+## Development
+
+Both halves have their own test suite; CI runs both on every push and pull
+request.
+
+```bash
+uv run pytest -m "not slow"        # engine fast suite (~5 s)
+uv run pytest                      # + slow end-to-end tests (loads real models)
+
+cd app/LocalVoice && xcodegen generate && \
+  xcodebuild -project LocalVoice.xcodeproj -scheme LocalVoice \
+  -destination 'platform=macOS' test        # app suite
+```
+
+The JSON-lines protocol between the app and `localvoice serve` — every
+event, every command, and the hot-apply semantics of each config key — is
+specified in [`docs/gui.md`](docs/gui.md), which also describes the app's
+client architecture.
+
 ## Roadmap
 
-**v1** (this repository) is the full push-to-talk loop: hold, talk, release,
-answer, barge-in, Esc, earcons, configuration, the `setup` command, tests,
-docs, and CI.
+**Shipped**: the full push-to-talk engine and CLI (hold, talk, release,
+answer, barge-in, Esc, earcons, configuration, the `setup` command), and
+the native macOS app (live conversation view, generated settings editor
+with restore-defaults, model manager, permission onboarding, global hotkey
+via the app's own event tap) — with tests, docs, and CI for both.
 
-**Phase 2**: streaming STT during the hold (transcribing as you talk rather
+**Next — packaging (phase C)**: a self-contained `LocalVoice.app` that
+bundles the engine (PyInstaller) so no repo checkout or `uv` is needed,
+distributed via GitHub Releases.
+
+**Later**: streaming STT during the hold (transcribing as you talk rather
 than after you release, for an estimated further ~0.3 s latency win), a
 `parakeet-mlx` STT option, an OpenAI-compatible LLM backend so LM Studio or
-Ollama can serve as the LLM engine, a spoken thinking-mode toggle, and
-session transcript export.
-
-**Phase 3**: a menu-bar app shell, tool calling, additional TTS backends
+Ollama can serve as the LLM engine, a spoken thinking-mode toggle, session
+transcript export, a menu-bar shell, tool calling, additional TTS backends
 (Chatterbox-Turbo, Qwen3-TTS), and an experiment in skipping STT entirely
 via a model with native audio input (Gemma 4 E4B).
 

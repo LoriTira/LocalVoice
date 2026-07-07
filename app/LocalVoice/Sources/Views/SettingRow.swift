@@ -75,6 +75,55 @@ private func draftString(from value: JSONValue) -> String {
     }
 }
 
+/// What a row should do with its draft when a fresh `config_applied`
+/// changes the live config underneath it — the pure decision behind
+/// `SettingRow`'s `.onChange(of: appState.config)`, kept as a free function
+/// (like `jsonValue(fromDraft:type:)` and `HotkeyMonitor.decide`) so the
+/// restore-defaults reconciliation is unit-testable without a live SwiftUI
+/// view host.
+enum DraftReconcile: Equatable {
+    case keep                    // leave the draft (and pending) exactly as-is
+    case clearPending            // the value we were waiting on landed; drop the indicator
+    case reseed(JSONValue)       // adopt this value as the new draft (clears any pending)
+}
+
+/// Decides how a row reconciles against a new live `config` value.
+///
+/// WHY re-seed idle rows (the restore-defaults pitfall fix): the old
+/// `.onChange` bailed at `guard let pending` for any row without a pending
+/// change, so a row the user never touched this session ignored every
+/// `config_applied` and kept showing its stale draft. After `reset_config`
+/// clears a key, that key's row is exactly such an untouched row — it MUST
+/// pick up the new (default) value. So an idle, non-editing row now re-seeds
+/// whenever the live value diverges from what it's displaying. The one thing
+/// still never stomped is a row the user is *actively editing* (`isEditing`):
+/// an unrelated `config_applied` landing mid-keystroke must not yank the
+/// half-typed draft out from under them.
+///
+/// - `newValue`: the key's value in the just-applied config.
+/// - `currentDraftValue`: what the row's current draft would itself commit as.
+/// - `pending`: the value the row is waiting to see land, or `nil` if idle.
+/// - `isEditing`: whether this row's control currently has focus.
+func reconcileDraft(
+    newValue: JSONValue,
+    currentDraftValue: JSONValue,
+    pending: JSONValue?,
+    isEditing: Bool
+) -> DraftReconcile {
+    // Never disturb a draft the user is typing into right now.
+    if isEditing { return .keep }
+    if let pending {
+        // Pending case (pre-existing behavior, unchanged): the awaited value
+        // landed → just clear the indicator; a different (external) value
+        // landed → that external value wins over our stale draft.
+        if newValue == pending { return .clearPending }
+        if newValue != currentDraftValue { return .reseed(newValue) }
+        return .clearPending
+    }
+    // Idle case (the fix): adopt the new value unless the row already shows it.
+    return newValue == currentDraftValue ? .keep : .reseed(newValue)
+}
+
 /// One editable row for a single `SchemaField`, dispatched to the widget
 /// per `docs/gui.md`'s widget-to-control mapping. Every widget owns a local
 /// `draft` string seeded from the field's current value and commits back
@@ -162,20 +211,26 @@ struct SettingRow: View {
             seedTypedDrafts(from: liveValue)
         }
         .onChange(of: appState.config) {
-            // A fresh configApplied landed. If it carries the value we're
-            // waiting on, the pending edit is done — clear the indicator
-            // and let the (now-authoritative) live value own the draft
-            // again. If some other actor changed this same key to a
-            // different value in the meantime, that external value wins
-            // over our stale local draft too.
-            guard let pending = pendingValue else { return }
-            let current = liveValue
-            if current == pending {
+            // A fresh configApplied landed. `reconcileDraft` decides what
+            // happens (see its doc comment for the full rationale) — crucially
+            // it now re-seeds an *idle* row too, so a key cleared by
+            // reset_config underneath an untouched row updates on screen
+            // instead of showing a stale value, while never stomping a draft
+            // the user is actively editing (`isFocused`).
+            switch reconcileDraft(
+                newValue: liveValue,
+                currentDraftValue: typedDraftValue,
+                pending: pendingValue,
+                isEditing: isFocused
+            ) {
+            case .keep:
+                break
+            case .clearPending:
                 pendingValue = nil
-            } else if current != typedDraftValue {
+            case .reseed(let value):
                 pendingValue = nil
-                draft = draftString(from: current)
-                seedTypedDrafts(from: current)
+                draft = draftString(from: value)
+                seedTypedDrafts(from: value)
             }
         }
     }
