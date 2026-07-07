@@ -132,6 +132,10 @@ def run_pipeline(
                         return
             if parser.call is None:
                 break  # genuine end of turn: fall through to the single tail flush
+            # On the last round (tools withheld) a marker the model emits anyway
+            # is still parsed and executed even though its result cannot feed a
+            # further round — a deliberate, correctness-neutral literal reading
+            # of the contract, not a bug (the observer callbacks stay truthful).
             call = parser.call
             malformed = parser.malformed
             deps.on_tool_call(call.name, _call_summary(call, malformed))
