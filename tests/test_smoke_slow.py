@@ -377,6 +377,16 @@ def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path
     engine.load()
     assert engine._cache[0].offset == 0  # nothing prefilled yet
 
+    # DIRTY the text cache first: a fresh-load offset of 0 would make the
+    # post-image assertion pass even if the reset were deleted, guarding
+    # nothing. A real TEXT turn populates the cache (offset > 0), so the
+    # zero-offset check after the image turn genuinely pins the reset.
+    warmup = "".join(
+        engine.stream([{"role": "user", "content": "Say the word hello."}], think=False)
+    )
+    assert warmup.strip()
+    assert engine._cache[0].offset > 0  # text turn left real prefill state
+
     reply = "".join(
         engine.stream(
             [{"role": "user", "content": "What color is this image? Answer with one word."}],
@@ -386,10 +396,11 @@ def test_mlx_vlm_image_turn_describes_color_and_leaves_text_cache_clean(tmp_path
     )
     assert "red" in reply.lower(), f"expected 'red' in the model's answer, got: {reply!r}"
 
-    # The persisted TEXT-turn cache is left at a clean zero offset — either
-    # because the image turn never touched it in the first place (it isn't
-    # passed to mlx-vlm at all) or via the engine's own defensive reset.
+    # The image turn must leave the persisted TEXT-turn cache reset to a
+    # clean zero offset (the finally: _reset_cache() in _stream_image) —
+    # meaningful now precisely because the warmup turn dirtied it above.
     assert engine._cache[0].offset == 0
+    assert engine._prompt_tokens == []
 
     # A plain TEXT turn right after must still work through the ordinary
     # hybrid path — proof the image turn didn't wedge the engine.

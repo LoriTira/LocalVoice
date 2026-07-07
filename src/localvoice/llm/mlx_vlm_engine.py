@@ -165,8 +165,16 @@ class MlxVlmEngine:
                 self._processor,
                 prompt,
                 image=image_path,
+                # T2 scope cut, T3 must revisit: no `+ think_tokens` budget
+                # bump here (unlike _stream_text) — a thinking image turn can
+                # exhaust its budget mid-reasoning and yield an empty answer.
                 max_tokens=self._cfg.max_tokens,
             ):
+                # T2 scope cut, T3 MUST fix before wiring this into the
+                # pipeline: the raw text skips ChannelThinkTranslator, so a
+                # spontaneously opened <|channel>thought block would flow to
+                # callers unmarked — on a spoken path that is the reasoning-
+                # read-aloud bug all over again, on image turns.
                 yield result.text
         finally:
             self._reset_cache()
