@@ -133,13 +133,16 @@ Example — `user_text` / `assistant_clause` / `reasoning`:
 {"event": "reasoning", "text": "The user is asking about Australia's capital, which is commonly confused with Sydney..."}
 ```
 
-Example — `tool_call` / `tool_result` (one pair per tool round; `tool_call`
-fires as soon as the model's call is parsed, `tool_result` after the tool
-finishes executing, both strictly before that turn's `turn_done`):
+Example — `tool_call` / `tool_result` (normally one pair per tool round;
+`tool_call` fires as soon as the model's call is parsed, `tool_result` after
+the tool finishes executing, both strictly before that turn's `turn_done`).
+A cancellation (Esc or barge-in) between the two can leave a `tool_call` with
+no matching `tool_result` for that round — a client should not assume every
+`tool_call` is always followed by a `tool_result`:
 
 ```json
-{"event": "tool_call", "name": "web_search", "summary": "calling web_search"}
-{"event": "tool_result", "name": "web_search", "ok": true, "summary": "found 5 results"}
+{"event": "tool_call", "name": "web_search", "summary": "Calling web_search"}
+{"event": "tool_result", "name": "web_search", "ok": true, "summary": "Found 5 results for: boston weather"}
 ```
 
 Example — `turn_done`:

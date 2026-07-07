@@ -13,7 +13,10 @@ speakers as it's generated — the first words of the reply start playing
 before the model has finished thinking of the rest. If the model needs
 current information it can search the web mid-answer (DuckDuckGo, free, no
 keys) — you hear a short pause, then the answer; the app shows what it
-searched.
+searched. Web-search tool calling only works with a model whose chat
+template supports tool calling (Gemma 4 does today; the shipped Qwen3.6
+default's template does not, so it never receives tools regardless of the
+`[tools]` settings).
 
 - **Esc** stops the current response immediately (or discards the current
   recording if you're still holding the key).
