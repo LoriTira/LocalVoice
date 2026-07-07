@@ -191,6 +191,7 @@ Every command object has a `"cmd"` key naming it.
 | `ptt_up` | `held_ms` (int, default `500` if omitted) | posts `PTT_UP` with the hold duration the client measured. Rejected with `error` before `engines_ready`. |
 | `esc` | — | posts `ESC` (cancel/stop). Always accepted. |
 | `set_config` | `changes`: `{"dotted.key": value, ...}` | coerce every value → write `localvoice.local.toml` → hot-apply (§ below) → reply `config_applied`. A bad key or bad value yields `error` and no write. |
+| `reset_config` | `keep`: `["dotted.key", ...]` (optional, default `[]`) | removes every key currently set in the overlay **except** those in `keep`, rewrites `localvoice.local.toml` atomically (pruning now-empty sections; the file stays present even if empty) → hot-applies the resulting diff through the same path as `set_config` (§ below) → reply `config_applied` with the full merged config and the `reloaded` list. Only fields whose merged value actually changed are applied, so a cleared engine-bound key reloads its engine while a cleared instant key just reverts. Unknown `keep` keys are ignored; an unwritable overlay yields `error`. |
 | `list_models` | — | scans `~/.lmstudio/models/*/*` plus the HF cache; replies `models`. |
 | `download_model` | `repo` (HF repo id) | runs `snapshot_download` on a worker thread; streams `download_progress`. |
 | `preview_voice` | `voice` (Kokoro voice id) | synthesizes a fixed sample line with the given voice through the real player, then restores the configured voice. Requires `engines_ready`. |
@@ -209,6 +210,12 @@ Example — `set_config`:
 
 ```json
 {"cmd": "set_config", "changes": {"llm.think": true, "tts.speed": 1.2}}
+```
+
+Example — `reset_config` (clears the overlay but keeps the four model assignments):
+
+```json
+{"cmd": "reset_config", "keep": ["llm.model", "llm.deep_model", "stt.model", "tts.model"]}
 ```
 
 Example — `list_models`:
@@ -288,6 +295,11 @@ A `set_config` call can touch fields from more than one row at once (e.g.
 `{"llm.think": true, "llm.model": "..."}`); each row's action runs for the
 keys that match it, and `reloaded` lists every engine that got a reload out
 of that one call.
+
+`reset_config` runs this same table: after clearing the overlay it diffs the
+old and new merged config and hot-applies only the keys that changed, so a
+model assignment left untouched by `keep` costs no reload while a cleared
+engine-bound key reloads exactly as an equivalent `set_config` would.
 
 ## Driving it manually
 

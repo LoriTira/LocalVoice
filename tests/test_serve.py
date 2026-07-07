@@ -185,6 +185,86 @@ def test_set_config_reload_path(tmp_path):
     assert len([m for m in events_of(msgs, "load_progress") if m["engine"] == "llm"]) >= 4
 
 
+def test_reset_config_clears_overlay_but_keeps_kept_model_key(tmp_path):
+    """reset_config removes every overlay key except those in `keep`: after a
+    set_config that overrode both a kept model key and a non-kept instant key,
+    resetting with keep=[llm.model] must leave the overlay holding only
+    llm.model, and config_applied must show the base default for the cleared
+    key (llm.think back to False) while keeping the model override."""
+    import tomllib
+
+    msgs = build(
+        tmp_path,
+        [
+            {"cmd": "set_config", "changes": {"llm.model": "kept/model", "llm.think": "true"}},
+            {"cmd": "reset_config", "keep": ["llm.model"]},
+            {"cmd": "shutdown"},
+        ],
+    )
+    applied = events_of(msgs, "config_applied")
+    reset_applied = applied[-1]
+    # Cleared instant key reverts to its dataclass default; kept model survives.
+    assert reset_applied["config"]["llm"]["think"] is False
+    assert reset_applied["config"]["llm"]["model"] == "kept/model"
+    data = tomllib.loads((tmp_path / "localvoice.local.toml").read_text())
+    assert data == {"llm": {"model": "kept/model"}}
+
+
+def test_reset_config_reloads_only_engine_bound_keys_that_changed(tmp_path):
+    """The reset diff routes through the same plan_apply path set_config uses:
+    only engine-bound keys whose merged value actually changes trigger a
+    reload. Here llm.model was overridden then reset (not kept), so it reverts
+    to the base default and the llm engine must reload; the cleared instant
+    key (llm.think) must NOT cause any reload."""
+    msgs = build(
+        tmp_path,
+        [
+            {"cmd": "set_config", "changes": {"llm.model": "other/model", "llm.think": "true"}},
+            {"cmd": "reset_config", "keep": []},
+            {"cmd": "shutdown"},
+        ],
+    )
+    reset_applied = events_of(msgs, "config_applied")[-1]
+    assert reset_applied["reloaded"] == ["llm"]
+    # Back to the base default now that the override was cleared.
+    assert reset_applied["config"]["llm"]["model"] == LlmConfig().model
+    assert reset_applied["config"]["llm"]["think"] is False
+
+
+def test_reset_config_with_empty_overlay_applies_with_no_reloads(tmp_path):
+    """Resetting when the overlay is already empty (nothing was ever
+    overridden) is a valid no-op-ish call: it still replies config_applied
+    with the full base config and an empty reloaded list, never an error."""
+    msgs = build(
+        tmp_path,
+        [{"cmd": "reset_config", "keep": ["llm.model"]}, {"cmd": "shutdown"}],
+    )
+    applied = events_of(msgs, "config_applied")
+    assert len(applied) == 1
+    assert applied[0]["reloaded"] == []
+    # Full merged config still present; nothing changed from the defaults.
+    assert applied[0]["config"]["llm"]["model"] == LlmConfig().model
+    assert not events_of(msgs, "error")
+
+
+def test_reset_config_defaults_keep_to_empty_when_omitted(tmp_path):
+    """`keep` is optional (default empty): a reset_config with no keep field
+    clears the entire overlay, same as keep=[]."""
+    import tomllib
+
+    msgs = build(
+        tmp_path,
+        [
+            {"cmd": "set_config", "changes": {"llm.think": "true"}},
+            {"cmd": "reset_config"},
+            {"cmd": "shutdown"},
+        ],
+    )
+    reset_applied = events_of(msgs, "config_applied")[-1]
+    assert reset_applied["config"]["llm"]["think"] is False
+    assert tomllib.loads((tmp_path / "localvoice.local.toml").read_text()) == {}
+
+
 def test_bad_config_value_yields_error_event(tmp_path):
     msgs = build(
         tmp_path,
