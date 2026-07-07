@@ -301,8 +301,32 @@ def test_mlx_vlm_hybrid_text_parity_and_prefix_reuse():
     assert reused > 0, "no reusable prefix — the hybrid would re-prefill every turn"
     assert engine._cache[0].offset > 0  # prefix-reuse path is armed before the call
 
+    # Spy (not stub) on _reset_cache across turn 2: real behavior must still
+    # run (turn 3 below reuses this same engine), but with a genuine reusable
+    # prefix and a trimmable cache (Gemma's is a plain KVCache,
+    # can_trim_prompt_cache-compatible), _stream_text must take the trim
+    # branch, never the reset/re-prefill-from-scratch one. Asserting on
+    # reused/offset above proves the trim branch's PRECONDITIONS hold; this
+    # pins the branch itself, directly, against the regression where a future
+    # change makes it reset unconditionally and silently loses the latency
+    # win prefix reuse exists for, without any of the other assertions here
+    # (which only check the final text/offset, not which path produced them)
+    # catching it.
+    real_reset_cache = engine._reset_cache
+    reset_calls = {"n": 0}
+
+    def _spy_reset_cache() -> None:
+        reset_calls["n"] += 1
+        real_reset_cache()
+
+    engine._reset_cache = _spy_reset_cache
+
     reply2 = "".join(engine.stream(msgs2, think=False))
     assert reply2.strip(), "hybrid turn 2 produced no text"
+    assert reset_calls["n"] == 0, (
+        "turn 2 had a real reusable prefix and a trimmable cache -- "
+        "_stream_text must trim it, never reset/re-prefill from scratch"
+    )
 
     # Think turn: Gemma streams reasoning as <|channel>thought…; the engine's
     # always-on ChannelThinkTranslator must surface it as a canonical <think>

@@ -95,3 +95,69 @@ def test_vlm_stream_routes_image_path_to_dedicated_method(monkeypatch):
     out = list(eng.stream(msgs, think=True, image_path="/tmp/x.png"))
     assert out == ["ok"]
     assert seen["args"] == (msgs, True, "/tmp/x.png")
+
+
+def test_load_resolves_hf_repo_id_to_one_local_snapshot_before_local_only_calls(
+    monkeypatch, tmp_path
+):
+    """MlxVlmEngine.load() must resolve a model string (repo id OR local path
+    -- mlx_lm.utils._download handles both, the same helper mlx_lm.load()
+    itself uses) to a local snapshot path BEFORE calling mlx_lm's
+    load_config/load_tokenizer, which only ever understood local directories.
+
+    Regression guard: passing a bare HF repo id straight through as
+    Path(cfg.model) let vlm_load succeed on its own (it does its own
+    resolution/download internally), while load_config/load_tokenizer then
+    raised FileNotFoundError against a path that was never a real directory
+    -- so a repo-id `[llm].model` under the mlx_vlm engine could download
+    ~15GB and still fail to boot.
+
+    The fix must also resolve EXACTLY ONCE and feed that SAME resolved path
+    to vlm_load too (not the original repo id) -- a "consistent snapshot":
+    load_config/load_tokenizer and vlm_load must all read the identical
+    on-disk directory rather than each doing (or skipping) their own,
+    possibly-divergent resolution.
+    """
+    import mlx_lm.utils as mlx_lm_utils
+    import mlx_vlm as mlx_vlm_pkg
+
+    resolved = tmp_path / "snapshot"
+    resolved.mkdir()
+    calls: dict = {"download_n": 0}
+
+    def fake_download(path_or_hf_repo, revision=None):
+        calls["download_n"] += 1
+        calls["download_arg"] = path_or_hf_repo
+        return resolved
+
+    def fake_load_config(model_path):
+        calls["load_config_arg"] = model_path
+        return {"eos_token_id": [1, 106, 50]}
+
+    def fake_load_tokenizer(model_path, eos_token_ids=None):
+        calls["load_tokenizer_arg"] = model_path
+        calls["load_tokenizer_eos"] = eos_token_ids
+        return types.SimpleNamespace(chat_template=None)
+
+    def fake_vlm_load(path_or_hf_repo):
+        calls["vlm_load_arg"] = path_or_hf_repo
+        model = types.SimpleNamespace(language_model=types.SimpleNamespace(layers=[]))
+        return model, "PROCESSOR"
+
+    monkeypatch.setattr(mlx_lm_utils, "_download", fake_download)
+    monkeypatch.setattr(mlx_lm_utils, "load_config", fake_load_config)
+    monkeypatch.setattr(mlx_lm_utils, "load_tokenizer", fake_load_tokenizer)
+    monkeypatch.setattr(mlx_vlm_pkg, "load", fake_vlm_load)
+
+    repo_id = "mlx-community/gemma-4-26B-it-4bit"
+    engine = MlxVlmEngine(LlmConfig(model=repo_id))
+    engine.load()
+
+    assert calls["download_n"] == 1, "must resolve once, not re-resolve per loader call"
+    assert calls["download_arg"] == repo_id
+    assert calls["load_config_arg"] == resolved
+    assert calls["load_tokenizer_arg"] == resolved
+    # vlm_load must receive the SAME resolved snapshot, not the raw repo id.
+    assert calls["vlm_load_arg"] == str(resolved)
+    assert calls["load_tokenizer_eos"] == [1, 106, 50]
+    assert engine._processor == "PROCESSOR"

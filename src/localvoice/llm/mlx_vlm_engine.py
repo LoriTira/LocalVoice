@@ -56,21 +56,29 @@ class MlxVlmEngine:
         self._prompt_tokens: list[int] = []
 
     def load(self) -> None:
-        from pathlib import Path
-
-        from mlx_lm.utils import load_config, load_tokenizer
+        from mlx_lm.utils import _download, load_config, load_tokenizer
         from mlx_vlm import load as vlm_load
 
-        self._model, self._processor = vlm_load(self._cfg.model)
+        # Resolve model/repo id to a local snapshot path FIRST, via the exact
+        # helper mlx_lm.load() itself uses internally (mlx_lm.utils._download:
+        # local paths pass through untouched, HF repo ids get snapshot_download-
+        # ed). Passing a bare repo id straight through as Path(cfg.model) (the
+        # old code) is not a real filesystem path, so load_config/load_tokenizer
+        # below raised FileNotFoundError against it -- even though vlm_load
+        # would have happily resolved/downloaded the same repo id on its own.
+        # Resolving once and handing vlm_load this SAME local path (rather than
+        # the original repo id) guarantees load_config/load_tokenizer and
+        # vlm_load all read one consistent on-disk snapshot.
+        model_path = _download(self._cfg.model)
+        self._model, self._processor = vlm_load(str(model_path))
         # Text turns run through mlx-lm's generation loop, so the tokenizer must
         # be built the way mlx_lm.load builds it — NOT taken from the mlx-vlm
         # processor. The processor's tokenizer exposes only <eos> (id 1), so
         # generation would never stop at Gemma's <end_of_turn> and would burn the
         # full token budget every turn; it also returns a BatchEncoding from
         # apply_chat_template rather than a token-id list. load_tokenizer with the
-        # model config's full eos set ([1, 50, 106]) fixes both — true text-turn
+        # model config's full eos set ([1, 106, 50]) fixes both — true text-turn
         # parity with MlxLmEngine. self._processor is kept for T3's image path.
-        model_path = Path(self._cfg.model)
         eos_token_ids = load_config(model_path).get("eos_token_id")
         self._tokenizer = load_tokenizer(model_path, eos_token_ids=eos_token_ids)
         tmpl = getattr(self._tokenizer, "chat_template", None)
@@ -119,10 +127,17 @@ class MlxVlmEngine:
         such a model's image turns simply never think).
 
         No `prompt_cache` is passed to mlx-vlm, so it builds and discards its
-        own scratch KV cache for this call alone (see mlx_vlm.generate.
-        dispatch.stream_generate: absent a `prompt_cache` kwarg, it calls
-        mlx_vlm's own `cache.make_prompt_cache` and never hands the result
-        back to us) — `self._cache`/`self._prompt_tokens`, the persisted
+        own scratch KV cache for this call alone. Verified against the pinned
+        mlx-vlm==0.6.4 source: `from mlx_vlm import stream_generate` resolves
+        to `mlx_vlm.generate.dispatch.stream_generate`, which — absent a
+        `prompt_cache` kwarg — builds one inline via its own
+        `cache.make_prompt_cache(model.language_model, ...)` before ever
+        calling `mlx_vlm.generate.ar.generate_step` (that function carries an
+        equivalent `if prompt_cache is None` fallback of its own, for callers
+        that invoke it directly, but dispatch has already filled the kwarg in
+        by the time it reaches generate_step here, so that fallback never
+        fires on this path) — either way the cache is never handed back to
+        us. `self._cache`/`self._prompt_tokens`, the persisted
         TEXT-turn state `_stream_text` trims against, are never read or
         written by an image turn; prefix reuse is simply skipped (full
         prefill), which is fine since image turns are rare. Reading gemma4's
