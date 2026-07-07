@@ -161,3 +161,93 @@ def test_load_resolves_hf_repo_id_to_one_local_snapshot_before_local_only_calls(
     assert calls["vlm_load_arg"] == str(resolved)
     assert calls["load_tokenizer_eos"] == [1, 106, 50]
     assert engine._processor == "PROCESSOR"
+
+
+def test_supports_images_capability_flags():
+    # Task 3 gates tool-offering on this: only an image-capable engine
+    # should ever be offered an image-producing tool.
+    assert MlxVlmEngine.supports_images is True
+    assert MlxLmEngine.supports_images is False
+
+
+def _bare_vlm_engine(cfg: LlmConfig, *, channel_style: bool) -> MlxVlmEngine:
+    """Construct a MlxVlmEngine without load(): set only the private attrs
+    _stream_image actually touches. White-box but honest for a wiring test
+    (mirrors the FakeTower stand-ins used elsewhere in this file) --
+    _model needs a `.config` (fed to apply_chat_template, itself stubbed
+    below) and a `.language_model.layers` (make_prompt_cache, invoked by
+    the defensive _reset_cache() in _stream_image's `finally`)."""
+    eng = MlxVlmEngine(cfg)
+    eng._processor = "PROCESSOR"
+    eng._model = types.SimpleNamespace(
+        config="CONFIG", language_model=types.SimpleNamespace(layers=[])
+    )
+    eng._channel_style = channel_style
+    return eng
+
+
+def test_stream_image_translates_channel_thought_like_text_turns(monkeypatch):
+    # Regression guard for the retired T2 scope cut: a spontaneously opened
+    # <|channel>thought block on an image turn must land in <think> tags
+    # exactly like a text turn, never flow to callers unmarked -- on a
+    # spoken path that is the reasoning-read-aloud bug all over again.
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+
+    deltas = [
+        types.SimpleNamespace(text="<|channel>thought\nsecret reasoning"),
+        types.SimpleNamespace(text="<channel|>answer"),
+    ]
+    seen = {}
+
+    def fake_apply_chat_template(processor, config, messages, **kwargs):
+        return "PROMPT"
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        seen["kwargs"] = kwargs
+        yield from deltas
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", fake_stream_generate)
+    monkeypatch.setattr(mlx_vlm.prompt_utils, "apply_chat_template", fake_apply_chat_template)
+
+    cfg = LlmConfig(model="x", max_tokens=32, think_tokens=64)
+    eng = _bare_vlm_engine(cfg, channel_style=True)
+
+    out = "".join(
+        eng._stream_image([{"role": "user", "content": "what is this?"}], True, "/fake/img.png")
+    )
+
+    assert out == "<think>secret reasoning</think>answer"
+    # think=True budget bump: the other retired scope cut.
+    assert seen["kwargs"]["max_tokens"] == cfg.max_tokens + cfg.think_tokens
+    assert seen["kwargs"]["image"] == "/fake/img.png"
+
+
+def test_stream_image_skips_translator_and_bump_when_not_thinking(monkeypatch):
+    # Converse of the test above: a non-channel-style model's raw text must
+    # pass through untouched (no translator instantiated at all), and
+    # think=False must NOT bump the token budget.
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+
+    seen = {}
+
+    def fake_apply_chat_template(processor, config, messages, **kwargs):
+        return "PROMPT"
+
+    def fake_stream_generate(model, processor, prompt, **kwargs):
+        seen["kwargs"] = kwargs
+        yield types.SimpleNamespace(text="plain answer, <|channel> looks literal here")
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", fake_stream_generate)
+    monkeypatch.setattr(mlx_vlm.prompt_utils, "apply_chat_template", fake_apply_chat_template)
+
+    cfg = LlmConfig(model="x", max_tokens=32, think_tokens=64)
+    eng = _bare_vlm_engine(cfg, channel_style=False)
+
+    out = "".join(
+        eng._stream_image([{"role": "user", "content": "what is this?"}], False, "/fake/img.png")
+    )
+
+    assert out == "plain answer, <|channel> looks literal here"
+    assert seen["kwargs"]["max_tokens"] == cfg.max_tokens

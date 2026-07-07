@@ -144,6 +144,12 @@ def _stream_text(
 
 
 class MlxLmEngine:
+    # Text-only tower: never loads a vision stack, so it can never honestly
+    # accept an image_path (see stream()'s ValueError below). A plain class
+    # attribute -- unlike supports_tools, this never depends on the loaded
+    # chat template, so it needs no load() to be read.
+    supports_images = False
+
     def __init__(self, cfg: LlmConfig) -> None:
         self._cfg = cfg
         self._model = None

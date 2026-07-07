@@ -76,12 +76,14 @@ class ScriptedToolLLM:
         self.rounds = rounds
         self.calls = []
         self.supports_tools = supports_tools
+        self.last_image_path: str | None = None
 
     def load(self) -> None:
         pass
 
-    def stream(self, messages, *, think, tools=None):
+    def stream(self, messages, *, think, tools=None, image_path=None):
         self.calls.append({"messages": list(messages), "tools": tools})
+        self.last_image_path = image_path
         yield from self.rounds[len(self.calls) - 1]
 
 

@@ -77,8 +77,8 @@ def test_cancel_mid_llm_stops_and_stays_silent():
             super().__init__(["First bit. ", "Second bit. ", "Third."])
             self._cancel = cancel
 
-        def stream(self, messages, *, think, tools=None):
-            for i, d in enumerate(super().stream(messages, think=think)):
+        def stream(self, messages, *, think, tools=None, image_path=None):
+            for i, d in enumerate(super().stream(messages, think=think, image_path=image_path)):
                 if i == 1:
                     self._cancel.set()
                 yield d
@@ -186,6 +186,9 @@ def test_tool_round_executes_and_speaks_continuation():
     }
     assert calls == [("web_search", "Calling web_search")]
     assert results == [("web_search", True, "found 1 result")]
+    # The pipeline doesn't thread image_path yet (that's T3 Task 4) -- the
+    # fake must still default/record it honestly rather than erroring.
+    assert llm.last_image_path is None
 
 
 def test_last_round_offers_no_tools():
