@@ -1,11 +1,27 @@
 import SwiftUI
 
+/// Whether the on-screen Stop button can do anything: a response is being
+/// generated ("processing") or spoken ("speaking"). While idle there is
+/// nothing to stop, and while listening the recording is ended by releasing
+/// push-to-talk, not by Stop. Free function so the mapping is testable
+/// without constructing the view (same pattern as `decide(...)` for the
+/// hotkey).
+func stopButtonEnabled(assistantState: String) -> Bool {
+    assistantState == "processing" || assistantState == "speaking"
+}
+
 /// The main conversation screen: state orb, transcript, mic level while
-/// listening, last-turn latency chips, and the on-screen hold-to-talk
-/// button. Every outgoing command (`pttDown`/`pttUp`/`esc`) goes through
-/// the same `EngineClient` the app shell started — this view holds no
-/// process or protocol state of its own beyond what `AppState` already
-/// tracks.
+/// listening, last-turn latency chips, the on-screen hold-to-talk button,
+/// and a Stop button that interrupts the current response. Every outgoing
+/// command (`pttDown`/`pttUp`/`esc`) goes through the same `EngineClient`
+/// the app shell started — this view holds no process or protocol state of
+/// its own beyond what `AppState` already tracks.
+///
+/// The Stop button exists because the global Esc path depends on `keyDown`
+/// CGEventTap delivery, which on at least one real machine is not delivered
+/// to this app's tap even though `flagsChanged` (push-to-talk) is — an
+/// on-screen button goes straight to the `esc` protocol command and cannot
+/// be affected by input-tap delivery at all.
 ///
 /// Each command send below is a `Task { await client.send(...) }`
 /// constructed inline at its gesture/key callback, with the `EngineCommand`
@@ -43,7 +59,10 @@ struct TalkView: View {
                 latencyChips(latency)
             }
 
-            holdToTalkButton
+            HStack(spacing: 12) {
+                holdToTalkButton
+                stopButton
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -156,6 +175,23 @@ struct TalkView: View {
                         Task { await client.send(.pttUp(heldMs: heldMs)) }
                     }
             )
+    }
+
+    // MARK: - Stop
+
+    private var stopButton: some View {
+        Button {
+            Task { await client.send(.esc) }
+        } label: {
+            Label("Stop", systemImage: "stop.fill")
+                .font(.headline)
+                .frame(height: 44)
+                .padding(.horizontal, 16)
+        }
+        .buttonStyle(.bordered)
+        .tint(.red)
+        .disabled(!stopButtonEnabled(assistantState: appState.assistantState))
+        .help("Stop the current response (Esc)")
     }
 
     /// Milliseconds elapsed from `start` to a single, freshly-captured
