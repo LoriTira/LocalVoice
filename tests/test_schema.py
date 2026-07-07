@@ -9,13 +9,14 @@ from localvoice.config import (
     KeysConfig,
     LlmConfig,
     SttConfig,
+    ToolsConfig,
     TtsConfig,
 )
 from localvoice.schema import build_schema, coerce
 
 
 def make_cfg() -> Config:
-    return Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    return Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
 
 
 def test_schema_covers_every_config_field_exactly_once():
@@ -25,7 +26,7 @@ def test_schema_covers_every_config_field_exactly_once():
         f"{section}.{f.name}"
         for section, cls in (
             ("stt", SttConfig), ("llm", LlmConfig), ("tts", TtsConfig),
-            ("keys", KeysConfig), ("audio", AudioConfig),
+            ("keys", KeysConfig), ("audio", AudioConfig), ("tools", ToolsConfig),
         )
         for f in fields(cls)
     }

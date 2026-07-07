@@ -72,6 +72,8 @@ in addition to `"event"`.
 | `user_text` | `text` | STT finishes transcribing a turn |
 | `assistant_clause` | `text` | each sentence-ish clause the LLM produces, as it's chunked for TTS |
 | `reasoning` | `text` | thinking-mode silent reasoning content (never spoken) |
+| `tool_call` | `name` (str), `summary` (str) | pipeline tool rounds |
+| `tool_result` | `name` (str), `ok` (bool), `summary` (str) | pipeline tool rounds |
 | `turn_done` | `latency`: `{stt, ttft, first_clause, tts_first, total}`, all floats in seconds | once per successful turn, when generation and synthesis of the *whole* reply completes — not at first audio. Every value in `latency` is a duration frozen at or before first-audio (see the definitions below), but the event itself is emitted only after the LLM stream and clause synthesis loop finish (`pipeline.py::run_pipeline`, right after `player.mark_end()`). On a long answer, `turn_done` can arrive noticeably later than the moment the user actually started hearing the reply. |
 | `level` | `rms` (float, 4 decimals) | mic input level, throttled to ≤20 Hz, only while the capture buffer is armed (state `listening`) |
 | `load_progress` | `engine`: `"stt"` \| `"llm"` \| `"tts"`, `phase`: `"start"` \| `"done"`, `seconds` (float, only on `"done"`; `null` on `"start"`) | initial load and every hot-apply reload |
@@ -129,6 +131,18 @@ Example — `user_text` / `assistant_clause` / `reasoning`:
 {"event": "user_text", "text": "What's the capital of Australia?"}
 {"event": "assistant_clause", "text": "Canberra is the capital of Australia."}
 {"event": "reasoning", "text": "The user is asking about Australia's capital, which is commonly confused with Sydney..."}
+```
+
+Example — `tool_call` / `tool_result` (normally one pair per tool round;
+`tool_call` fires as soon as the model's call is parsed, `tool_result` after
+the tool finishes executing, both strictly before that turn's `turn_done`).
+A cancellation (Esc or barge-in) between the two can leave a `tool_call` with
+no matching `tool_result` for that round — a client should not assume every
+`tool_call` is always followed by a `tool_result`:
+
+```json
+{"event": "tool_call", "name": "web_search", "summary": "Calling web_search"}
+{"event": "tool_result", "name": "web_search", "ok": true, "summary": "Found 5 results for: boston weather"}
 ```
 
 Example — `turn_done`:
@@ -290,6 +304,7 @@ applies the change to the running process per this table (spec §5):
 | `llm.model`, `llm.deep_model`, `stt.model`, `tts.model`, any `*.engine` | The named engine (`stt`/`llm`/`tts`) is reloaded on the single inference thread — same thread every load and pipeline run uses — emitting `load_progress(start)`/`load_progress(done)`. Conversation history is untouched; a turn already in flight keeps running on the old engine instance until it finishes (reloads queue behind it on the same thread). | `reloaded: ["llm"]` (etc., in `stt, llm, tts` order, deduped) |
 | `audio.input_device`, `audio.output_device`, `audio.rebuffer_ms` | Player and capture streams are stopped and restarted. | `reloaded: []`, but the restart itself can emit `error` if the new device is unavailable |
 | `keys.ptt`, `keys.stop` | Stored on the live config for terminal-mode (`localvoice run`) use; **the GUI owns the actual key tap in Swift** and applies these client-side. `serve` does not install any hotkey listener. *Caveat: the v1 app hard-codes right-⌘/Esc in `HotkeyMonitor` and does not yet read these — configurable keys are a later phase.* | `reloaded: []` |
+| `tools.enabled`, `tools.web_search`, `tools.max_rounds`, `tools.search_results`, `tools.page_char_cap` | Applied immediately on the live config object. No reload, no audio restart. | `reloaded: []` |
 
 A `set_config` call can touch fields from more than one row at once (e.g.
 `{"llm.think": true, "llm.model": "..."}`); each row's action runs for the
@@ -300,6 +315,15 @@ of that one call.
 old and new merged config and hot-applies only the keys that changed, so a
 model assignment left untouched by `keep` costs no reload while a cleared
 engine-bound key reloads exactly as an equivalent `set_config` would.
+
+`[tools]` keys hot-apply per turn, no reload: the tool registry offered to
+the model is rebuilt from the live config at the start of every turn (not
+cached at engine-load time), so a `set_config` touching any `tools.*` field
+takes effect starting the very next turn with no engine reload and no
+audio restart. `tool_call`/`tool_result` events only occur when the active
+model's chat template actually supports tool calling — a template without
+tool-call rendering is never offered tools regardless of `tools.enabled`,
+so a client should not expect these two events from every model.
 
 ## Driving it manually
 

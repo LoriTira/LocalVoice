@@ -8,6 +8,14 @@ def test_channel_style_detected_from_template():
     assert not is_channel_style("")
 
 
+def test_supports_tools_detected_from_template():
+    from localvoice.llm.mlx_lm_engine import supports_tools
+
+    assert supports_tools("...{{ '<|tool>' }}...")
+    assert not supports_tools("...<think>...")
+    assert not supports_tools(None)
+
+
 def test_equal_lists():
     assert common_prefix_len([1, 2, 3], [1, 2, 3]) == 3
 

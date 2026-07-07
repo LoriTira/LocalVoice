@@ -4,13 +4,14 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from localvoice.audio.earcons import EARCONS
-from localvoice.config import KeysConfig
+from localvoice.config import KeysConfig, ToolsConfig
 from localvoice.events import Action as A
 from localvoice.events import Event
 from localvoice.events import EventType as E
 from localvoice.events import State as S
 from localvoice.pipeline import PipelineDeps, run_pipeline
 from localvoice.states import transition
+from localvoice.tools import registry_for
 
 _PIPELINE_EVENTS = {E.FIRST_AUDIO, E.RESPONSE_FINISHED, E.PIPELINE_ERROR}
 
@@ -26,6 +27,8 @@ class Orchestrator:
         tts,
         transcript,
         keys_cfg: KeysConfig,
+        tools_cfg: ToolsConfig | None = None,
+        tools_factory: Callable[[ToolsConfig], list] = registry_for,
         inference: ThreadPoolExecutor | None = None,
         think: bool = False,
         status: Callable[[str], None] = print,
@@ -36,13 +39,25 @@ class Orchestrator:
         self._player = player
         self._transcript = transcript
         self._keys = keys_cfg
+        # None means "no tools configuration was supplied" (e.g. existing
+        # callers/tests that construct an Orchestrator directly): treated
+        # identically to a disabled ToolsConfig, never as an error.
+        self._tools_cfg = tools_cfg or ToolsConfig(enabled=False)
+        # Swappable the same way EngineSet(cfg, factories=...) is: production
+        # always uses the real registry_for, tests substitute a fake registry
+        # (e.g. a ScriptedToolLLM + EchoTool pair) without needing a real
+        # WebSearchTool/network dependency in the loop.
+        self._tools_factory = tools_factory
         self._status = status
         self._on_state = on_state
         self._deps = PipelineDeps(
             stt=stt, llm=llm, tts=tts, player=player, transcript=transcript, think=think,
+            max_tool_rounds=self._tools_cfg.max_rounds,
             on_user_text=lambda t: status(f"you: {t}"),
             on_assistant_clause=lambda t: status(f"assistant: {t}"),
             on_thinking=lambda t: status(f"reasoning: {t[:600]}{'...' if len(t) > 600 else ''}"),
+            on_tool_call=lambda name, summary: status(f"tool: {summary}"),
+            on_tool_result=lambda name, ok, summary: status(f"tool: {summary}"),
         )
         self._queue: queue.Queue[Event] = queue.Queue()
         self._cancel = threading.Event()
@@ -105,6 +120,15 @@ class Orchestrator:
         gen = self._gen
         self._cancel = threading.Event()
         cancel = self._cancel
+        # Recomputed fresh each turn, never cached at construction time: the
+        # llm engine's supports_tools only exists after load() (which can run
+        # asynchronously well after Orchestrator.__init__, and can flip on a
+        # hot-apply reload to a different model), and self._tools_cfg can be
+        # hot-applied between turns too. A non-tool-template model is never
+        # offered tools regardless of cfg.tools.enabled (Global Constraints).
+        supports_tools = getattr(self._deps.llm, "supports_tools", False)
+        self._deps.tools = self._tools_factory(self._tools_cfg) if supports_tools else []
+        self._deps.max_tool_rounds = self._tools_cfg.max_rounds
 
         def emit(event: Event) -> None:
             self.post(Event(event.type, event.held_ms, event.message, gen))

@@ -48,6 +48,16 @@ struct TalkView: View {
         VStack(spacing: 16) {
             orb
 
+            if let activity = appState.toolActivity {
+                Text(activity)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.15))
+                    .clipShape(Capsule())
+                    .accessibilityLabel("Tool activity: \(activity)")
+            }
+
             transcript
 
             if appState.assistantState == "listening" {

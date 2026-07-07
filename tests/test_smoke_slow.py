@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from localvoice.transcript import Transcript
 from tests.fakes import FakePlayer
 
 TINY_LLM = Path.home() / ".lmstudio/models/mlx-community/Qwen3.5-0.8B-MLX-4bit"
+GEMMA_LLM = Path.home() / ".lmstudio/models/lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"
 
 
 @pytest.mark.slow
@@ -182,3 +184,72 @@ def test_serve_protocol_end_to_end(tmp_path):
         except Exception:  # noqa: BLE001
             pass
         proc.wait(timeout=10)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not GEMMA_LLM.exists(), reason="Gemma tool-capable model not present")
+def test_gemma_template_renders_tool_round_continuation():
+    """The regression test that would have caught the tool-round crash: load
+    the REAL Gemma chat template and render a full tool-round message sequence
+    (system / user / assistant-with-tool_calls / tool) with tools= schemas.
+
+    The bug: pipeline.py fed the role:"tool" message a dict `content`; Gemma's
+    template tests `content is sequence` (True for a dict), iterates it as a
+    list, hits a string key, calls .get() on that str, and raises
+    UndefinedError. The fix JSON-encodes the content to a string. The fakes in
+    test_pipeline.py never render a real template, so only this test exercises
+    the actual template constraint end-to-end.
+    """
+    from transformers import AutoTokenizer
+
+    from localvoice.tools.base import hf_tool_schema
+
+    class _WebSearch:
+        name = "web_search"
+        description = "Search the web for current information."
+        parameters = {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+
+    tok = AutoTokenizer.from_pretrained(str(GEMMA_LLM))
+    tools = [hf_tool_schema(_WebSearch())]
+    result_content = {"results": [{"title": "T", "url": "u", "snippet": "s"}]}
+
+    def sequence(content):
+        # Mirrors pipeline.py's exact role:"tool" message shape.
+        return [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What is the current weather in Boston?"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": {"query": "weather Boston"},
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "name": "web_search", "content": content},
+        ]
+
+    # The fix: content is a JSON string (what pipeline.py now builds) -> renders.
+    out = tok.apply_chat_template(
+        sequence(json.dumps(result_content)),
+        tools=tools,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    assert isinstance(out, str) and out
+
+    # Guard the regression: the pre-fix raw-dict content still crashes this
+    # template, so this test genuinely exercises the bug it protects against.
+    with pytest.raises(Exception):
+        tok.apply_chat_template(
+            sequence(result_content), tools=tools, add_generation_prompt=True, tokenize=False
+        )

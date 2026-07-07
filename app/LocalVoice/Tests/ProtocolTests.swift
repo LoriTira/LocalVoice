@@ -42,6 +42,21 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testDecodeToolCall() throws {
+        let line = #"{"event":"tool_call","name":"web_search","summary":"calling web_search"}"#
+        guard case let .toolCall(name, summary)? = EngineEvent.decode(line: line) else { return XCTFail("wrong case") }
+        XCTAssertEqual(name, "web_search")
+        XCTAssertEqual(summary, "calling web_search")
+    }
+
+    func testDecodeToolResult() throws {
+        let line = #"{"event":"tool_result","name":"web_search","ok":true,"summary":"found 5 results"}"#
+        guard case let .toolResult(name, ok, summary)? = EngineEvent.decode(line: line) else { return XCTFail("wrong case") }
+        XCTAssertEqual(name, "web_search")
+        XCTAssertTrue(ok)
+        XCTAssertEqual(summary, "found 5 results")
+    }
+
     func testUnknownEventAndGarbageReturnNil() {
         XCTAssertNil(EngineEvent.decode(line: #"{"event": "brand_new_thing", "x": 1}"#))
         XCTAssertNil(EngineEvent.decode(line: "not json"))

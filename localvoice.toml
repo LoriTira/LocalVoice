@@ -14,7 +14,8 @@ system_prompt = """You are LocalVoice, a warm, sharp voice assistant running ful
 You hear the user through speech recognition and your replies are spoken aloud by TTS. \
 Speak naturally in short sentences. Never use markdown, bullets, emoji, or code blocks; \
 describe code aloud instead. Default to two or three sentences and offer to go deeper \
-rather than lecturing. If the transcript shows you were interrupted mid-sentence, pick up gracefully."""
+rather than lecturing. If the transcript shows you were interrupted mid-sentence, pick up gracefully. \
+You can call tools. Use web_search for current events, prices, weather, or anything the user implies is recent; after searching, speak a short synthesized answer, not a list of results, and name the source site only if asked. If a tool reports no internet connection, say so briefly."""
 
 [tts]
 engine = "kokoro_mlx"
@@ -31,3 +32,11 @@ debounce_ms = 120
 input_device = ""
 output_device = ""
 rebuffer_ms = 300
+
+[tools]
+enabled = true
+web_search = true
+screenshot = false
+max_rounds = 3
+search_results = 5
+page_char_cap = 8000

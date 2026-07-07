@@ -1,12 +1,21 @@
 import io
 import json
+import threading
 import time
 from pathlib import Path
 
-from localvoice.config import AudioConfig, Config, KeysConfig, LlmConfig, SttConfig, TtsConfig
+from localvoice.config import (
+    AudioConfig,
+    Config,
+    KeysConfig,
+    LlmConfig,
+    SttConfig,
+    ToolsConfig,
+    TtsConfig,
+)
 from localvoice.engineset import EngineSet
 from localvoice.serve import Serve
-from tests.fakes import FakeLLM, FakePlayer, FakeSTT, FakeTTS
+from tests.fakes import EchoTool, FakeLLM, FakePlayer, FakeSTT, FakeTTS, ScriptedToolLLM
 
 
 class FakeCapture:
@@ -107,7 +116,7 @@ class ManualExecutor:
 def build(
     tmp_path: Path, commands: list[dict], capture=None, raw_lines: list[str] | None = None
 ) -> list[dict]:
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {
@@ -159,6 +168,160 @@ def test_ptt_turn_emits_transcript_and_turn_done(tmp_path):
     }
     states = [m["state"] for m in events_of(msgs, "state")]
     assert "listening" in states and "processing" in states
+
+
+_CALL = '<|tool_call>call:web_search{query:<|"|>rain<|"|>}<tool_call|>'
+
+
+def test_tool_events_emitted(tmp_path):
+    """A turn scripted for one tool round must surface tool_call then
+    tool_result on the protocol stream, in order, before turn_done — the two
+    new events Task 7 adds, emitted through the same locked emitter path as
+    every other pipeline callback (see on_thinking's `reasoning` wiring)."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    tool = EchoTool()
+    llm = ScriptedToolLLM([["Let me check. ", _CALL], ["It will rain at noon."]])
+    factories = {
+        "stt": lambda c: FakeSTT("what's the weather"),
+        "llm": lambda c: llm,
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [{"cmd": "ptt_down"}, {"cmd": "ptt_up", "held_ms": 500}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+        # Swaps the real registry_for (which would build the actual
+        # WebSearchTool) for a fake registry offering just EchoTool, the
+        # same substitution EngineSet(cfg, factories=...) does for engines.
+        tools_factory=lambda tools_cfg: [tool],
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    msgs = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    call_ev = events_of(msgs, "tool_call")
+    result_ev = events_of(msgs, "tool_result")
+    assert call_ev == [
+        {"event": "tool_call", "name": "web_search", "summary": "Calling web_search"}
+    ]
+    assert result_ev == [
+        {"event": "tool_result", "name": "web_search", "ok": True, "summary": "found 1 result"}
+    ]
+    call_idx = msgs.index(call_ev[0])
+    result_idx = msgs.index(result_ev[0])
+    turn_done_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "turn_done")
+    assert call_idx < result_idx < turn_done_idx
+    assert llm.calls[0]["tools"] and isinstance(llm.calls[0]["tools"], list)
+
+
+def test_pipeline_error_surfaces_as_protocol_error_event(tmp_path):
+    """A pipeline-level crash mid-turn must reach the GUI as an {"event":
+    "error", ...} protocol message. Regression guard for the finding that
+    serve constructed the Orchestrator with status=lambda s: None, so
+    A.REPORT_ERROR's status call (the only surfacing of PIPELINE_ERROR) was
+    swallowed — a real user saw the assistant silently go idle with no banner.
+
+    The TTS raises during synthesis (same mechanism as
+    test_pipeline.py::test_error_emits_pipeline_error). Uses a real inference
+    thread (like production) so the pipeline runs off the orchestrator loop
+    thread, and only sends shutdown AFTER the error event is observed — a
+    shutdown that races the turn would cancel it and suppress the error emit
+    (pipeline.py guards emit on `not cancel.is_set()`)."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+
+    class BoomTTS(FakeTTS):
+        def synthesize(self, text):
+            raise RuntimeError("kaboom")
+            yield  # pragma: no cover
+
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["Hi from the fake. ", "More words."]),
+        "tts": lambda c: BoomTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    emitted: list[dict] = []
+    saw_error = threading.Event()
+
+    class _CollectingStdout:
+        def write(self, s: str) -> None:
+            for line in s.splitlines():
+                if line.strip():
+                    obj = json.loads(line)
+                    emitted.append(obj)
+                    if obj.get("event") == "error":
+                        saw_error.set()
+
+        def flush(self) -> None:
+            pass
+
+    class _ScriptedStdin:
+        """Yields ptt_down/ptt_up, then blocks until the error is observed
+        before yielding shutdown, so shutdown never cancels the in-flight turn."""
+
+        def __iter__(self):
+            yield json.dumps({"cmd": "ptt_down"})
+            yield json.dumps({"cmd": "ptt_up", "held_ms": 500})
+            saw_error.wait(timeout=5)
+            yield json.dumps({"cmd": "shutdown"})
+
+    inference = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True,
+        stdin=_ScriptedStdin(), stdout=_CollectingStdout(),
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=inference,
+    )
+    s._exit = lambda code: None
+    s.run()
+    inference.shutdown(wait=True)
+    assert saw_error.is_set(), f"no error event emitted: {[m.get('event') for m in emitted]}"
+    errors = events_of(emitted, "error")
+    assert any("kaboom" in m["message"] for m in errors), emitted
+
+
+def test_tools_not_offered_without_template_support(tmp_path):
+    """A model whose chat template can't render tool calls (supports_tools is
+    False after load()) must never be offered tools, even with
+    cfg.tools.enabled = True — Global Constraints: tools are config-gated
+    AND template-gated, template support wins when the model can't accept
+    them."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    assert cfg.tools.enabled is True  # precondition: config alone would allow tools
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    llm = FakeLLM(["No tools here."], supports_tools=False)
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: llm,
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [{"cmd": "ptt_down"}, {"cmd": "ptt_up", "held_ms": 500}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    assert llm.last_tools is None
+    assert not events_of([json.loads(line) for line in stdout.getvalue().splitlines()], "tool_call")
 
 
 def test_set_config_instant_and_overlay(tmp_path):
@@ -329,7 +492,7 @@ def test_set_config_system_prompt_hot_applies_to_next_turn(tmp_path):
     the very next turn's first LLM call already carries the new prompt —
     not just the Serve-level Config object, which the pipeline never reads
     directly."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     fake_llm = FakeLLM(["Hi from the fake. ", "More words."])
@@ -366,7 +529,7 @@ def test_boot_load_failure_then_recovery_via_reload(tmp_path):
     and a client that fixes the config (set_config llm.model -> reload)
     must be able to complete the boot via the normal reload path, with
     engines_ready firing once the recovered engine finishes loading."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
 
@@ -435,7 +598,7 @@ def test_boot_load_failure_then_recovery_via_reload(tmp_path):
 def test_preview_voice_restores_original_voice_and_reaches_player(tmp_path):
     """preview_voice must synthesize through the real player and restore the
     configured voice afterward, in the ordinary (non-concurrent) case."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     original_voice = cfg.tts.voice
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
@@ -467,7 +630,7 @@ def test_preview_voice_cas_restore_does_not_clobber_concurrent_set_config(tmp_pa
     preview's finally block must not blindly stomp that concurrent change
     back to the pre-preview voice. Compare-and-swap semantics: only restore
     if the live voice is still what preview itself set."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
 
@@ -519,7 +682,7 @@ def test_ptt_down_before_engines_ready_yields_error(tmp_path):
     never a crash or a silently-dropped command. Using ManualExecutor to
     defer the load job proves this holds even in the window before
     _load_engines has been executed at all -- not just while it's running."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {
@@ -553,7 +716,7 @@ def test_restart_audio_stops_then_starts_the_player(tmp_path):
     restart path (which now also re-arms PlaybackQueue's rebuffer gate via
     AudioPlayer.start(), item 4) really runs, not just that config_applied
     fires."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {

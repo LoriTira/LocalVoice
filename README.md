@@ -10,7 +10,13 @@ native macOS app and a terminal CLI, both driving the same local engine.
 Hold **right ⌘** and talk. Release it, and LocalVoice transcribes what you
 said, sends it to a local LLM, and speaks the answer back through your
 speakers as it's generated — the first words of the reply start playing
-before the model has finished thinking of the rest.
+before the model has finished thinking of the rest. If the model needs
+current information it can search the web mid-answer (DuckDuckGo, free, no
+keys) — you hear a short pause, then the answer; the app shows what it
+searched. Web-search tool calling only works with a model whose chat
+template supports tool calling (Gemma 4 does today; the shipped Qwen3.6
+default's template does not, so it never receives tools regardless of the
+`[tools]` settings).
 
 - **Esc** stops the current response immediately (or discards the current
   recording if you're still holding the key).
@@ -185,7 +191,9 @@ strategy, and the phased roadmap, is
 `LocalVoice.app` is a native SwiftUI app (macOS 15+) that drives the same
 engine as the CLI, over the line-delimited JSON protocol `localvoice serve`
 speaks on stdio — a Talk view with the live transcript, reasoning, mic
-level, and per-turn latency; a Settings pane generated from the engine's
+level, and per-turn latency, and, when the model decides it needs them,
+free web-search tool calls whose progress shows live under the state orb;
+a Settings pane generated from the engine's
 own config schema (every key editable live, plus a **Restore defaults**
 button that resets everything except your model assignments — the shipped
 default model is a Hugging Face repo id, and resetting to it would trigger
@@ -258,10 +266,12 @@ client architecture.
 ## Roadmap
 
 **Shipped**: the full push-to-talk engine and CLI (hold, talk, release,
-answer, barge-in, Esc, earcons, configuration, the `setup` command), and
-the native macOS app (live conversation view, generated settings editor
-with restore-defaults, model manager, permission onboarding, global hotkey
-via the app's own event tap) — with tests, docs, and CI for both.
+answer, barge-in, Esc, earcons, configuration, the `setup` command),
+free web-search tool calling (DuckDuckGo, no keys) the model can invoke
+mid-answer, and the native macOS app (live conversation view, generated
+settings editor with restore-defaults, model manager, permission
+onboarding, global hotkey via the app's own event tap) — with tests, docs,
+and CI for both.
 
 **Next — packaging (phase C)**: a self-contained `LocalVoice.app` that
 bundles the engine (PyInstaller) so no repo checkout or `uv` is needed,
@@ -271,9 +281,9 @@ distributed via GitHub Releases.
 than after you release, for an estimated further ~0.3 s latency win), a
 `parakeet-mlx` STT option, an OpenAI-compatible LLM backend so LM Studio or
 Ollama can serve as the LLM engine, a spoken thinking-mode toggle, session
-transcript export, a menu-bar shell, tool calling, additional TTS backends
-(Chatterbox-Turbo, Qwen3-TTS), and an experiment in skipping STT entirely
-via a model with native audio input (Gemma 4 E4B).
+transcript export, a menu-bar shell, screen-vision tool calls (phase T3),
+additional TTS backends (Chatterbox-Turbo, Qwen3-TTS), and an experiment in
+skipping STT entirely via a model with native audio input (Gemma 4 E4B).
 
 ## Acknowledgments
 

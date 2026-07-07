@@ -12,6 +12,13 @@ def is_channel_style(chat_template: str | None) -> bool:
     return bool(chat_template) and "<|channel>" in chat_template
 
 
+def supports_tools(chat_template: str | None) -> bool:
+    """Whether the tokenizer's chat template renders a tool-call block at all
+    (i.e. accepts the `tools=` kwarg to apply_chat_template). Used to decide
+    whether to offer tool schemas to a given model."""
+    return bool(chat_template) and "<|tool>" in chat_template
+
+
 def common_prefix_len(a: list[int], b: list[int]) -> int:
     n = min(len(a), len(b))
     for i in range(n):
@@ -55,6 +62,7 @@ class MlxLmEngine:
 
         self._model, self._tokenizer = load(self._cfg.model)
         self._channel_style = is_channel_style(getattr(self._tokenizer, "chat_template", None))
+        self.supports_tools = supports_tools(getattr(self._tokenizer, "chat_template", None))
         self._reset_cache()
 
     def _reset_cache(self) -> None:
@@ -63,24 +71,33 @@ class MlxLmEngine:
         self._cache = make_prompt_cache(self._model)
         self._prompt_tokens = []
 
-    def _template(self, messages: list[Message], think: bool) -> list[int]:
+    def _template(
+        self, messages: list[Message], think: bool, tools: list[dict] | None = None
+    ) -> list[int]:
+        kwargs = {"tools": tools} if tools else {}
         try:
             return self._tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, enable_thinking=think
+                messages, add_generation_prompt=True, enable_thinking=think, **kwargs
             )
         except TypeError:  # template without enable_thinking support
-            return self._tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+            return self._tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, **kwargs
+            )
 
-    def stream(self, messages: list[Message], *, think: bool) -> Iterator[str]:
+    def stream(
+        self, messages: list[Message], *, think: bool, tools: list[dict] | None = None
+    ) -> Iterator[str]:
         from mlx_lm import stream_generate
 
         # Canonical full-conversation template every turn — no incremental
         # templating, so the token stream is always well-formed. Oldest turns
         # are dropped first when the prompt exceeds the context budget.
         messages = fit_messages(
-            messages, self._cfg.context_tokens, lambda m: len(self._template(m, think))
+            messages,
+            self._cfg.context_tokens,
+            lambda m: len(self._template(m, think, tools)),
         )
-        tokens = self._template(messages, think)
+        tokens = self._template(messages, think, tools)
 
         # Read how many tokens the cache actually holds (prompt + generated).
         cache = self._cache

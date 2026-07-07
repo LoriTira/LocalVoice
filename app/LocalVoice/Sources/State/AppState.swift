@@ -40,6 +40,13 @@ final class AppState {
     var loading: [String: String] = [:] // engine -> phase, while a load/reload runs
     var banner: String? // latest error message; nil when dismissed
     var protocolMismatch: Bool = false
+    /// Live description of the in-flight tool round, for the TalkView chip.
+    /// Set to `summary` on `toolCall`; on `toolResult(ok: false)` updated to
+    /// the failure's own summary so it reads out; on `toolResult(ok: true)`
+    /// also updated to the result's summary but left visible (not cleared)
+    /// until the turn actually finishes. Cleared (`nil`) on `turnDone` and
+    /// whenever `state` becomes `"idle"`, regardless of how it got there.
+    var toolActivity: String?
 
     /// Backs `Turn.id` — monotonically increasing across the whole session
     /// (never reset per pair, never derived from `turns.count`), so ids stay
@@ -81,6 +88,13 @@ final class AppState {
             if changedAwayFromListening {
                 micLevel = 0
             }
+            // Clear the tool chip on idle AND on listening. Barge-in goes
+            // PROCESSING/SPEAKING -> LISTENING without ever visiting idle, so
+            // clearing only on idle would freeze a stale "Calling web_search"
+            // chip through the entire next turn.
+            if s == "idle" || s == "listening" {
+                toolActivity = nil
+            }
 
         case let .userText(text):
             appendTurn(role: "user", text: text)
@@ -95,9 +109,13 @@ final class AppState {
             }
 
         case let .reasoning(text):
+            // Each `reasoning` event is a whole think block (the engine emits
+            // one per completed block, not per token), so across tool rounds
+            // multiple blocks land on the same assistant turn. Separate them
+            // with a blank line instead of butting them together into one run.
             if let last = turns.indices.last, turns[last].role == "assistant" {
                 if let existing = turns[last].reasoning, !existing.isEmpty {
-                    turns[last].reasoning = existing + text
+                    turns[last].reasoning = existing + "\n\n" + text
                 } else {
                     turns[last].reasoning = text
                 }
@@ -107,8 +125,18 @@ final class AppState {
                 turns.append(turn)
             }
 
+        case let .toolCall(_, summary):
+            toolActivity = summary
+
+        case let .toolResult(_, _, summary):
+            // Both outcomes update to the result's own summary so a failure
+            // reads out; only turnDone/idle (above/below) actually clears it
+            // — a successful result stays visible while the turn continues.
+            toolActivity = summary
+
         case let .turnDone(latency):
             lastLatency = latency
+            toolActivity = nil
 
         case let .level(v):
             micLevel = v

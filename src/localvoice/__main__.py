@@ -147,6 +147,7 @@ def cmd_run(args) -> None:
         tts=tts,
         transcript=transcript,
         keys_cfg=cfg.keys,
+        tools_cfg=cfg.tools,
         inference=inference,
         think=args.think or cfg.llm.think,
     )
