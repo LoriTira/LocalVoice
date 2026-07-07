@@ -36,6 +36,69 @@ voice-to-voice." Run-to-run variance was mostly a cold first run (JIT /
 cache warmup) followed by two stable runs within ~0.01-0.05 s of each
 other; the values above are representative, not one-off outliers.
 
+## mlx-vlm engine (Gemma 4 26B-A4B, tools phase T2)
+
+Tools T2 (`docs/superpowers/plans/2026-07-07-localvoice-tools-t2.md`) added a
+second LLM engine, `mlx_vlm`, so the user's own Gemma 4 26B-A4B model can load
+its vision tower (enabling image turns for a later phase's screenshot tool)
+while still driving ordinary text turns through the same shipped generation
+code — `mlx_lm.stream_generate` against `model.language_model`, via a thin
+logits adapter (`_TextTowerAdapter` in `src/localvoice/llm/mlx_vlm_engine.py`).
+The phase gate required benching `mlx_lm` and `mlx_vlm` back-to-back on the
+*same* model (the user's `gemma-4-26B-A4B-it-MLX-4bit`, via the gitignored
+`localvoice.local.toml` overlay) and passing both: best voice-to-voice
+**≤ 1.0 s**, and within **~15%** of the mlx_lm number measured the same
+session.
+
+| Stage | Measured — mlx_lm (Gemma 4 26B-A4B) | Measured — mlx_vlm (Gemma 4 26B-A4B) |
+|---|---|---|
+| Release → transcript (whisper-turbo) | 0.32 s | 0.33 s |
+| LLM first token (prompt-cached) | 0.32 s | 0.32 s |
+| First speakable clause (~10 tok) | 0.09 s | 0.09 s |
+| Kokoro first chunk | 0.10 s | 0.10 s |
+| **Voice-to-voice** | **0.82 s** | **0.84 s** |
+
+**Gate: PASS.** 0.84 s is under the 1.0 s ceiling, and only 2.4% slower than
+0.82 s — well inside the ~15% budget. Both numbers are the best (lowest-total)
+of `uv run localvoice bench --runs 3`, run immediately back-to-back in the
+same terminal session on the machine described below; the `mlx_vlm` run used
+a scratch config overlay (`[llm].engine = "mlx_vlm"`, every other `[llm]`
+value — model path, `context_tokens`, `max_tokens`, `think_tokens`,
+`system_prompt` — mirrored byte-for-byte from the merged config the `mlx_lm`
+run used) so the comparison is apples-to-apples. Full per-run output:
+
+```
+mlx_lm  — uv run localvoice bench --model <gemma-4-26B-A4B-it-MLX-4bit> --runs 3
+  load whisper: 1.3s | load llm: 2.5s | load kokoro: 1.7s
+  run 1: stt 0.34s | ttft 0.44s | clause 0.09s | tts 0.10s | total 0.96s
+  run 2: stt 0.35s | ttft 0.32s | clause 0.09s | tts 0.10s | total 0.86s
+  run 3: stt 0.32s | ttft 0.32s | clause 0.09s | tts 0.10s | total 0.82s
+  best voice-to-voice: 0.82s
+
+mlx_vlm — uv run localvoice bench --config <scratch.toml, engine=mlx_vlm> --runs 3
+  load whisper: 1.2s | load llm: 3.8s | load kokoro: 1.5s
+  run 1: stt 0.35s | ttft 0.46s | clause 0.09s | tts 0.10s | total 1.00s
+  run 2: stt 0.35s | ttft 0.33s | clause 0.09s | tts 0.10s | total 0.87s
+  run 3: stt 0.33s | ttft 0.32s | clause 0.09s | tts 0.10s | total 0.84s
+  best voice-to-voice: 0.84s
+```
+
+LLM load time is the one stage with a real, consistent gap — 2.5 s vs. 3.8 s
+— the vision tower's extra weights loading once at process startup; it does
+not touch per-turn voice-to-voice latency. STT/TTS load and per-run STT/TTS
+stage timings are noise-level identical between the two runs, as expected
+(neither engine touches whisper or Kokoro).
+
+Following the gate pass, the user's overlay (`localvoice.local.toml`, not
+committed) now sets `[llm] engine = "mlx_vlm"`. The shipped default
+(`localvoice.toml`) stays `mlx_lm` with the Qwen model — the shipped default
+model has no tool/vision template support regardless of engine, so there is
+nothing for `mlx_vlm` to add there.
+
+**Measured on:** Apple M5 Pro, 64 GB unified memory, macOS 26.5.1, on
+2026-07-07 — the same hardware/OS as the table above, same session for both
+engine rows.
+
 ## Running the benchmark
 
 ```bash
