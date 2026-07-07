@@ -107,4 +107,79 @@ final class SettingsLogicTests: XCTestCase {
     func testStrDraftOfOnlyWhitespaceTrimsToEmptyStringPassthrough() {
         XCTAssertEqual(jsonValue(fromDraft: "  ", type: "str"), .string(""))
     }
+
+    // MARK: - Row reconciliation on config_applied (Restore-defaults pitfall)
+
+    /// THE pitfall the restore-defaults feature must fix: a row the user
+    /// never touched this session (no pending change) previously ignored
+    /// every `config_applied` — its `onChange(of: config)` bailed at
+    /// `guard let pending`. So after a reset cleared that key underneath it,
+    /// the row kept showing its STALE pre-reset value. An idle row must
+    /// re-seed from the new live value.
+    func testIdleRowReseedsFromNewConfigValue() {
+        let outcome = reconcileDraft(
+            newValue: .double(1.0),      // reset reverted tts.speed to its default
+            currentDraftValue: .double(1.4),  // what the idle row is still showing
+            pending: nil,                // user never touched this row this session
+            isEditing: false
+        )
+        XCTAssertEqual(outcome, .reseed(.double(1.0)),
+                       "an idle row must adopt the new config value, not keep its stale draft")
+    }
+
+    /// A row the user is actively editing right now (focused) must NOT have
+    /// its in-progress draft stomped by a config_applied that arrived for
+    /// some other reason — the spec's "without stomping a draft the user is
+    /// actively editing in that moment" clause.
+    func testActivelyEditedRowIsNotStompedByConfigChange() {
+        let outcome = reconcileDraft(
+            newValue: .double(1.0),
+            currentDraftValue: .double(1.7),  // half-typed value the user is entering
+            pending: nil,
+            isEditing: true
+        )
+        XCTAssertEqual(outcome, .keep,
+                       "a focused row keeps the user's in-flight draft")
+    }
+
+    /// The normal pending-converged case still works: the row was waiting on
+    /// a value it sent, and the config_applied carries exactly that value —
+    /// clear the pending indicator, the live value now owns the draft.
+    func testPendingConvergedClearsPendingIndicator() {
+        let outcome = reconcileDraft(
+            newValue: .bool(true),
+            currentDraftValue: .bool(true),  // draft already matches what landed
+            pending: .bool(true),
+            isEditing: false
+        )
+        XCTAssertEqual(outcome, .clearPending,
+                       "when the landed value matches both draft and pending, just drop the indicator")
+    }
+
+    /// A pending row where some *other* actor changed the same key to a
+    /// different value: the external value wins over the stale local draft,
+    /// and the pending indicator clears.
+    func testPendingButExternalValueWinsAndReseeds() {
+        let outcome = reconcileDraft(
+            newValue: .int(2048),      // someone else set max_tokens to 2048
+            currentDraftValue: .int(9000),  // our stale pending draft
+            pending: .int(4096),       // what we were actually waiting on
+            isEditing: false
+        )
+        XCTAssertEqual(outcome, .reseed(.int(2048)),
+                       "an external change to a pending key reseeds from the external value")
+    }
+
+    /// Idempotent no-op: an idle row whose draft already equals the new live
+    /// value needs no change at all (avoids a needless redraw / cursor jump).
+    func testIdleRowAlreadyMatchingNeedsNoChange() {
+        let outcome = reconcileDraft(
+            newValue: .string("af_heart"),
+            currentDraftValue: .string("af_heart"),
+            pending: nil,
+            isEditing: false
+        )
+        XCTAssertEqual(outcome, .keep,
+                       "no reseed when the idle row already shows the live value")
+    }
 }

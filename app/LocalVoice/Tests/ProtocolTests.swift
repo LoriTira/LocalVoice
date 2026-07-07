@@ -62,6 +62,21 @@ final class ProtocolTests: XCTestCase {
             json(EngineCommand.previewVoice(voice: "af_heart").encodedLine()),
             ["cmd": "preview_voice", "voice": "af_heart"]
         )
+        try XCTAssertEqual(
+            json(EngineCommand.resetConfig(keep: ["llm.model", "tts.model"]).encodedLine()),
+            ["cmd": "reset_config", "keep": ["llm.model", "tts.model"]]
+        )
         XCTAssertFalse(EngineCommand.shutdown.encodedLine().contains("\n"))
+    }
+
+    /// `reset_config` with no kept keys still encodes an explicit empty
+    /// `keep` array (matching the engine's optional-defaults-to-empty
+    /// contract in docs/gui.md) rather than omitting the key.
+    func testEncodeResetConfigWithEmptyKeep() throws {
+        let dict = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(EngineCommand.resetConfig(keep: []).encodedLine().utf8)) as? NSDictionary
+        )
+        XCTAssertEqual(dict["cmd"] as? String, "reset_config")
+        XCTAssertEqual(dict["keep"] as? [String], [])
     }
 }

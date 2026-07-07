@@ -10,6 +10,20 @@ struct SettingsView: View {
     @Bindable var appState: AppState
     let client: EngineClient
 
+    /// Drives the "Restore default settings?" confirmation alert.
+    @State private var showRestoreConfirm = false
+
+    /// The four config keys `reset_config` is told to KEEP when restoring
+    /// defaults. WHY keep model assignments across a reset: the shipped
+    /// defaults (`localvoice.toml`) name a Hugging Face repo id
+    /// (`mlx-community/Qwen3.6-35B-A3B-4bit`, `prince-canuma/Kokoro-82M`, …)
+    /// that is typically NOT already on disk. Reverting a model key to that
+    /// default would make the very next engine reload silently start a
+    /// ~19 GB download — a hostile surprise for someone who just wanted to
+    /// undo a speed/prompt tweak. Keeping the user's actual model paths makes
+    /// "Restore defaults" a safe, instant operation.
+    private static let keptModelKeys = ["llm.model", "llm.deep_model", "stt.model", "tts.model"]
+
     var body: some View {
         Form {
             ForEach(sections, id: \.self) { section in
@@ -27,12 +41,23 @@ struct SettingsView: View {
             // edits land. `set_config` writes changes to `localvoice.local.toml`
             // (the local overlay), leaving the committed defaults untouched.
             Section {
+                Button("Restore defaults", role: .destructive) {
+                    showRestoreConfirm = true
+                }
                 Text("Changes are saved to localvoice.local.toml, your local settings overlay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .alert("Restore default settings?", isPresented: $showRestoreConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restore", role: .destructive) {
+                Task { await client.send(.resetConfig(keep: Self.keptModelKeys)) }
+            }
+        } message: {
+            Text("All settings return to their defaults. Model assignments are kept — change models in the Models tab.")
+        }
         .onAppear {
             // B6 review item 3: fetch the model list once per Settings
             // appearance here, not per `model_picker` row — this view has
