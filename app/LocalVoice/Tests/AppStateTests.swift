@@ -101,18 +101,34 @@ final class AppStateTests: XCTestCase {
     }
 
     /// `.reasoning` sets/appends the last assistant turn's `reasoning` field, independent of
-    /// (and without disturbing) the spoken `text`.
-    func testReasoningAttachesToLastAssistantTurn() {
+    /// (and without disturbing) the spoken `text`. Each `reasoning` event is one whole think
+    /// block (the engine emits one per completed block, not per token), so two of them —
+    /// e.g. reasoning from two tool rounds — are separated by a blank line, not run together.
+    func testReasoningAttachesToLastAssistantTurnWithBlankLineBetweenBlocks() {
         let state = AppState()
         state.reduce(.engine(.userText("what's the capital of Australia?")))
-        state.reduce(.engine(.reasoning("The user is asking about Australia's capital,")))
-        state.reduce(.engine(.reasoning(" often confused with Sydney.")))
+        state.reduce(.engine(.reasoning("First I should recall Australian geography.")))
+        state.reduce(.engine(.reasoning("It is Canberra, not Sydney.")))
         state.reduce(.engine(.assistantClause("Canberra.")))
 
         XCTAssertEqual(state.turns.count, 2)
         let assistantTurn = state.turns[1]
-        XCTAssertEqual(assistantTurn.reasoning, "The user is asking about Australia's capital, often confused with Sydney.")
+        XCTAssertEqual(
+            assistantTurn.reasoning,
+            "First I should recall Australian geography.\n\nIt is Canberra, not Sydney.",
+            "multi-round reasoning blocks are joined with a blank line, not concatenated bare"
+        )
         XCTAssertEqual(assistantTurn.text, "Canberra.")
+    }
+
+    /// The very first reasoning block on a turn is stored verbatim — the blank-line separator
+    /// is only inserted *between* blocks, never prepended to the first one.
+    func testFirstReasoningBlockHasNoLeadingSeparator() {
+        let state = AppState()
+        state.reduce(.engine(.userText("hi")))
+        state.reduce(.engine(.reasoning("Only one thought here.")))
+
+        XCTAssertEqual(state.turns.last?.reasoning, "Only one thought here.")
     }
 
     /// Barge-in: a fresh `userText` arriving while an assistant turn is mid-stream starts a new
@@ -332,11 +348,25 @@ final class AppStateTests: XCTestCase {
     /// independent clearing triggers.
     func testIdleStateClearsToolActivityEvenWithoutTurnDone() {
         let state = AppState()
-        state.reduce(.engine(.toolCall(name: "web_search", summary: "calling web_search")))
-        XCTAssertEqual(state.toolActivity, "calling web_search")
+        state.reduce(.engine(.toolCall(name: "web_search", summary: "Calling web_search")))
+        XCTAssertEqual(state.toolActivity, "Calling web_search")
 
         state.reduce(.engine(.state("idle")))
         XCTAssertNil(state.toolActivity)
+    }
+
+    /// Barge-in path: a turn goes PROCESSING/SPEAKING -> LISTENING without ever
+    /// passing through "idle". Entering "listening" must clear a standing tool
+    /// chip, otherwise a stale "Calling web_search" would freeze on screen
+    /// through the entire next turn.
+    func testListeningStateClearsToolActivityOnBargeIn() {
+        let state = AppState()
+        state.reduce(.engine(.state("speaking")))
+        state.reduce(.engine(.toolCall(name: "web_search", summary: "Calling web_search")))
+        XCTAssertEqual(state.toolActivity, "Calling web_search")
+
+        state.reduce(.engine(.state("listening"))) // barge-in, no idle in between
+        XCTAssertNil(state.toolActivity, "entering listening (barge-in) clears the stale tool chip")
     }
 
     // MARK: - Helpers

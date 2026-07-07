@@ -88,7 +88,11 @@ final class AppState {
             if changedAwayFromListening {
                 micLevel = 0
             }
-            if s == "idle" {
+            // Clear the tool chip on idle AND on listening. Barge-in goes
+            // PROCESSING/SPEAKING -> LISTENING without ever visiting idle, so
+            // clearing only on idle would freeze a stale "Calling web_search"
+            // chip through the entire next turn.
+            if s == "idle" || s == "listening" {
                 toolActivity = nil
             }
 
@@ -105,9 +109,13 @@ final class AppState {
             }
 
         case let .reasoning(text):
+            // Each `reasoning` event is a whole think block (the engine emits
+            // one per completed block, not per token), so across tool rounds
+            // multiple blocks land on the same assistant turn. Separate them
+            // with a blank line instead of butting them together into one run.
             if let last = turns.indices.last, turns[last].role == "assistant" {
                 if let existing = turns[last].reasoning, !existing.isEmpty {
-                    turns[last].reasoning = existing + text
+                    turns[last].reasoning = existing + "\n\n" + text
                 } else {
                     turns[last].reasoning = text
                 }
