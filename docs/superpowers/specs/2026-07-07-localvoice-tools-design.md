@@ -192,7 +192,40 @@ window-picking UI (main display only); OCR fallback for the non-vision
 engine; tool use in `--deep` mode with a non-tool-template model (tools
 are offered only when the template supports them); paid search APIs.
 
-## 11. Risks
+## 11. Amendment (2026-07-07): T2 spike pre-run — gate PASSES
+
+The §5 spike was run ahead of planning (same model, same prompts, this
+machine). Results:
+
+| Metric | mlx-lm 0.31.3 | mlx-vlm 0.6.4 | Delta | Gate (~15%) |
+|---|---|---|---|---|
+| Decode | 79.2 tok/s | 76.9 tok/s | −3% | pass |
+| Bulk prefill (≈1.5k tokens) | 1961 tok/s | 1720 tok/s | −12% | pass |
+| Peak memory | 14.5 GB | 15.7 GB | +1.1 GB | pass |
+
+(Short-prompt prefill shows a larger gap — fixed per-call overhead, not a
+rate difference; irrelevant at conversation sizes.)
+
+Dependency resolution: mlx-vlm 0.6.4 requires `mlx-audio>=0.4.3`,
+conflicting with our `==0.4.1` pin — but **mlx-audio 0.4.3 was verified
+Kokoro-clean** (the SineGen regression repro passes at short/medium/long
+utterance lengths; the breakage starts at 0.4.4). T2 therefore moves the
+pin to `==0.4.3`, which also natively allows `mlx-lm 0.31.3` (ephemeral
+co-resolution verified), likely retiring the `[tool.uv]` override.
+
+Implementation candidate ranked first for T2: **hybrid generation** — load
+via mlx-vlm once (vision-capable, single 15 GB residency), but drive
+text-only turns through `mlx_lm.stream_generate` against
+`model.language_model`. Verified: the tower is exposed,
+`make_prompt_cache` accepts it (30 layers) — so the shipped prefix-reuse
+code carries over unchanged; the one blocker is a return-type mismatch
+(`LanguageModelOutput` vs raw logits), bridged by a small `__call__`
+adapter returning `.logits`. Image turns use `mlx_vlm.stream_generate`.
+Fallback if the adapter fights back: plain `mlx_vlm.stream_generate` for
+everything, accepting full re-prefill per turn (within gate only for
+short-to-medium conversations — measure before accepting).
+
+## 12. Risks
 
 - **ddgs fragility** (free scraping breaks occasionally) → tool errors are
   structured and spoken gracefully; the library is swappable behind the
