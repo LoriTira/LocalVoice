@@ -184,7 +184,7 @@ def test_tool_round_executes_and_speaks_continuation():
     assert json.loads(second[-1]["content"]) == {
         "results": [{"title": "T", "url": "u", "snippet": "s"}]
     }
-    assert calls == [("web_search", "calling web_search")]
+    assert calls == [("web_search", "Calling web_search")]
     assert results == [("web_search", True, "found 1 result")]
 
 
@@ -264,3 +264,82 @@ def test_transcript_untouched_by_tool_traffic():
     for m in t.messages():
         assert m["role"] != "tool"
         assert "tool_calls" not in m
+
+
+# --- tools-T1 final-review fixes ------------------------------------------
+
+_EMPTY_CALL = "<|tool_call>call:web_search{}<tool_call|>"
+
+
+def test_tool_execute_exception_becomes_error_round_not_dead_turn():
+    # A syntactically valid call missing a required arg raises KeyError inside
+    # execute; that must NOT kill the turn. It should surface as a failed
+    # tool_result round (ok=False) and the model's continuation is still spoken.
+    class RaisingTool:
+        name = "web_search"
+        description = "d"
+        parameters = {"type": "object", "properties": {}}
+
+        def execute(self, args, cancel):
+            return args["query"]  # KeyError: 'query' — missing required arg
+
+    tts = FakeTTS()
+    results = []
+    llm = ScriptedToolLLM([["Let me look. ", _EMPTY_CALL], ["Here is the answer."]])
+    deps = make_deps(llm=llm, tts=tts)
+    deps.tools = [RaisingTool()]
+    deps.on_tool_result = lambda name, ok, summary: results.append((name, ok, summary))
+    events = run(deps, speech())
+
+    assert E.PIPELINE_ERROR not in [e.type for e in events]  # turn survived
+    assert results and results[0][1] is False  # on_tool_result fired ok=False
+    # The continuation round ran and its answer was spoken.
+    assert " ".join(tts.texts) == "Let me look. Here is the answer."
+    # The tool message carried the exception type/message back to the model.
+    second = llm.calls[1]["messages"]
+    assert second[-1]["role"] == "tool"
+    payload = json.loads(second[-1]["content"])
+    assert "KeyError" in payload["error"]
+
+
+def test_malformed_call_feedback_includes_raw():
+    # The malformed tool_result must carry the captured raw text so the model
+    # sees exactly what it got wrong (spec conformance).
+    bad_raw = "<|tool_call>call:web_search{query}<tool_call|>"  # missing ':' -> malformed
+    llm = ScriptedToolLLM([["hmm ", bad_raw], ["Recovered."]])
+    calls = []
+    deps = make_deps(llm=llm, tts=FakeTTS())
+    deps.tools = [EchoTool()]
+    deps.on_tool_call = lambda name, summary: calls.append((name, summary))
+    events = run(deps, speech())
+
+    assert E.PIPELINE_ERROR not in [e.type for e in events]
+    assert calls == [("web_search", "Malformed tool call")]
+    second = llm.calls[1]["messages"]
+    payload = json.loads(second[-1]["content"])
+    assert payload["error"] == "malformed tool call"
+    assert payload["raw"] == bad_raw  # the raw capture round-trips to the model
+
+
+def test_call_inside_unclosed_think_still_speaks_continuation():
+    # The call marker arrives while an unclosed <think> block is open. Without
+    # force_close_think the filter would stay in think mode across the
+    # continuation round and swallow the whole answer as reasoning. Instead the
+    # partial reasoning reaches on_thinking and the continuation IS spoken.
+    thoughts = []
+    tts = FakeTTS()
+    llm = ScriptedToolLLM(
+        [["<think>I should search for this. ", _CALL], ["It will rain at noon."]]
+    )
+    deps = make_deps(llm=llm, tts=tts)
+    deps.tools = [EchoTool()]
+    deps.on_thinking = thoughts.append
+    events = run(deps, speech())
+
+    assert E.PIPELINE_ERROR not in [e.type for e in events]
+    # The continuation answer is spoken (not swallowed as reasoning), and the
+    # pre-call reasoning marker text never leaks into TTS.
+    assert " ".join(tts.texts) == "It will rain at noon."
+    assert not any("search for this" in t for t in tts.texts)
+    # The partial reasoning was surfaced to the thinking observer.
+    assert any("I should search for this" in t for t in thoughts)

@@ -209,7 +209,7 @@ def test_tool_events_emitted(tmp_path):
     call_ev = events_of(msgs, "tool_call")
     result_ev = events_of(msgs, "tool_result")
     assert call_ev == [
-        {"event": "tool_call", "name": "web_search", "summary": "calling web_search"}
+        {"event": "tool_call", "name": "web_search", "summary": "Calling web_search"}
     ]
     assert result_ev == [
         {"event": "tool_result", "name": "web_search", "ok": True, "summary": "found 1 result"}

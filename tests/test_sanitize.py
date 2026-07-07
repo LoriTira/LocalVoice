@@ -123,3 +123,39 @@ def test_on_think_delivers_unclosed_think_at_finish():
     f.feed("<think>partial reasoning that never closes")
     assert f.finish() == ""
     assert got == ["partial reasoning that never closes"]
+
+
+def test_force_close_think_surfaces_partial_and_resumes_speaking():
+    # A tool marker captured inside an unclosed <think> block would otherwise
+    # leave the filter stuck in think mode for the whole continuation round,
+    # swallowing the answer as reasoning. force_close_think() flushes the
+    # partial thought and resets state so the next feed() speaks normally.
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    f.feed("<think>reasoning so far")
+    f.force_close_think()
+    assert got == ["reasoning so far"]
+    assert f.feed("The answer.") == "The answer."  # no longer swallowed
+
+
+def test_force_close_think_is_noop_when_not_in_think():
+    # Outside a think block it must not fire on_think or disturb the stream.
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    f.feed("plain prefix ")
+    f.force_close_think()
+    assert got == []
+    assert f.feed("and more.") == "and more."
+
+
+def test_force_close_think_flushes_held_partial_thought():
+    # Reasoning held back mid-delta is still surfaced by force_close_think. It
+    # mirrors finish()'s think branch exactly, including that branch's existing
+    # behavior of flushing whatever partial close-marker prefix is buffered
+    # (finish() does the same) — the point under test is that nothing is lost.
+    got: list[str] = []
+    f = TextFilter(on_think=got.append)
+    f.feed("<think>almost done</thin")  # trailing '</thin' held as a close prefix
+    f.force_close_think()
+    assert got == ["almost done</thin"]  # identical to finish()'s think branch
+    assert f.feed("Answer.") == "Answer."  # think mode was reset

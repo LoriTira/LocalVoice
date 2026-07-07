@@ -43,7 +43,7 @@ class PipelineDeps:
 
 
 def _call_summary(call: ToolCall, malformed: bool) -> str:
-    return "malformed tool call" if malformed else f"calling {call.name}"
+    return "Malformed tool call" if malformed else f"Calling {call.name}"
 
 
 def run_pipeline(
@@ -139,11 +139,20 @@ def run_pipeline(
             # of the contract, not a bug (the observer callbacks stay truthful).
             call = parser.call
             malformed = parser.malformed
+            # If the marker was captured inside an unclosed <think> block, the
+            # text filter is stuck in think mode; force it closed now (surfacing
+            # the partial reasoning) so the continuation round's answer is spoken
+            # instead of being swallowed as reasoning. No-op if not in think.
+            text_filter.force_close_think()
             deps.on_tool_call(call.name, _call_summary(call, malformed))
             tool = by_name.get(call.name)
             if malformed:
+                # Echo the captured raw text back so the model sees exactly what
+                # it got wrong and can correct it next round.
                 result = ToolResult(
-                    ok=False, content={"error": "malformed tool call"}, summary="tool call failed"
+                    ok=False,
+                    content={"error": "malformed tool call", "raw": call.raw},
+                    summary="tool call failed",
                 )
             elif tool is None:
                 result = ToolResult(
@@ -152,7 +161,18 @@ def run_pipeline(
                     summary="tool call failed",
                 )
             else:
-                result = tool.execute(call.args, cancel)
+                # A syntactically valid call can still blow up inside execute
+                # (e.g. a missing required arg -> KeyError). Contain it as a
+                # failed tool result so the model recovers next round, exactly
+                # like the unknown-tool path, instead of killing the turn.
+                try:
+                    result = tool.execute(call.args, cancel)
+                except Exception as exc:  # noqa: BLE001 — tool boundary
+                    result = ToolResult(
+                        ok=False,
+                        content={"error": f"{type(exc).__name__}: {exc}"},
+                        summary="tool call failed",
+                    )
             if cancel.is_set():
                 return
             deps.on_tool_result(call.name, result.ok, result.summary)

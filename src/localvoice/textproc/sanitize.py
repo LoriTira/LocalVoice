@@ -179,6 +179,20 @@ class TextFilter:
         out, self._buf = self._buf, ""
         return out
 
+    def force_close_think(self) -> None:
+        # A tool marker captured mid-stream inside an unclosed <think> block
+        # would leave the filter stuck in think mode across the continuation
+        # round, swallowing the whole next answer as reasoning. Called right
+        # after a call is captured: surface the partial thought and reset think
+        # state so the next feed() speaks. Mirrors finish()'s think branch; a
+        # no-op (and leaves an open code fence alone) when not in think.
+        if not self._in_think:
+            return
+        self._think_parts.append(self._buf)
+        self._emit_think()
+        self._buf = ""
+        self._in_think = False
+
     def _emit_think(self) -> None:
         text = "".join(self._think_parts).strip()
         self._think_parts = []
