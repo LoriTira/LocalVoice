@@ -22,6 +22,100 @@ def _longest_suffix_prefix(text: str, token: str) -> int:
     return 0
 
 
+_CH_OPEN = "<|channel>"
+_CH_CLOSE = "<channel|>"
+_CH_THOUGHT = "thought"
+# A channel name is a short lowercase word; anything longer than this without
+# a terminator is not a channel marker and must flow through as literal text
+# rather than being held back forever.
+_CH_NAME_MAX = 24
+
+
+class ChannelThinkTranslator:
+    """Normalize Gemma-4-style reasoning channels to canonical think tags.
+
+    Gemma 4 templates wrap reasoning as ``<|channel>thought\\n ... <channel|>``
+    (with thinking disabled the template pre-closes an empty thought channel,
+    so nothing streams). The rest of the pipeline — TextFilter, the reasoning
+    protocol event, transcripts — speaks only Qwen's ``<think>``/``</think>``,
+    so the LLM engine runs this translator over the raw stream for
+    channel-style models and downstream code stays model-agnostic.
+
+    Non-``thought`` channels pass through untouched: they are not reasoning,
+    and a future tool-calling layer will want to see them.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_thought = False
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        out: list[str] = []
+        while True:
+            if self._in_thought:
+                j = self._buf.find(_CH_CLOSE)
+                if j < 0:
+                    hold = _longest_suffix_prefix(self._buf, _CH_CLOSE)
+                    out.append(self._buf[: len(self._buf) - hold])
+                    self._buf = self._buf[len(self._buf) - hold :]
+                    break
+                out.append(self._buf[:j])
+                out.append(_THINK_CLOSE)
+                self._buf = self._buf[j + len(_CH_CLOSE) :]
+                self._in_thought = False
+                continue
+
+            i_open = self._buf.find(_CH_OPEN)
+            i_close = self._buf.find(_CH_CLOSE)
+            candidates = [(i, t) for i, t in ((i_open, _CH_OPEN), (i_close, _CH_CLOSE)) if i >= 0]
+            if not candidates:
+                hold = max(
+                    _longest_suffix_prefix(self._buf, _CH_OPEN),
+                    _longest_suffix_prefix(self._buf, _CH_CLOSE),
+                )
+                out.append(self._buf[: len(self._buf) - hold])
+                self._buf = self._buf[len(self._buf) - hold :]
+                break
+            i, tok = min(candidates)
+            if tok == _CH_CLOSE:  # close with no open: swallow, never speak it
+                out.append(self._buf[:i])
+                self._buf = self._buf[i + len(_CH_CLOSE) :]
+                continue
+
+            name_start = i + len(_CH_OPEN)
+            name_end = name_start
+            while name_end < len(self._buf) and self._buf[name_end].isalpha():
+                name_end += 1
+            if name_end == len(self._buf) and name_end - name_start <= _CH_NAME_MAX:
+                # Marker present but the channel name may continue in the next
+                # delta — hold from the marker on.
+                out.append(self._buf[:i])
+                self._buf = self._buf[i:]
+                break
+            name = self._buf[name_start:name_end]
+            out.append(self._buf[:i])
+            if name == _CH_THOUGHT:
+                self._buf = self._buf[name_end:]
+                if self._buf.startswith("\n"):
+                    self._buf = self._buf[1:]
+                out.append(_THINK_OPEN)
+                self._in_thought = True
+            else:  # unknown channel: emit the marker literally and move on
+                out.append(self._buf[i:name_end])
+                self._buf = self._buf[name_end:]
+        return "".join(out)
+
+    def finish(self) -> str:
+        out, self._buf = self._buf, ""
+        if self._in_thought:
+            # Cancelled or truncated mid-think: close the canonical block so
+            # TextFilter surfaces the partial reasoning instead of holding it.
+            self._in_thought = False
+            return out + _THINK_CLOSE
+        return out
+
+
 class TextFilter:
     def __init__(self, on_think=None) -> None:
         self._buf = ""

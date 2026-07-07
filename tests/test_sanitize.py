@@ -1,6 +1,58 @@
 import pytest
 
-from localvoice.textproc.sanitize import TextFilter, strip_speech_markup
+from localvoice.textproc.sanitize import ChannelThinkTranslator, TextFilter, strip_speech_markup
+
+
+def run_translator(deltas: list[str]) -> str:
+    t = ChannelThinkTranslator()
+    return "".join(t.feed(d) for d in deltas) + t.finish()
+
+
+def test_channel_thought_normalized_to_canonical_think_tags():
+    # Exact delta boundaries observed live from gemma-4-26B-A4B (think=true):
+    # the open marker arrives split as '<|channel>' + 'thought' + '\n'.
+    deltas = ["<|channel>", "thought", "\n", "The user asks 2+2.", "<channel|>", "2 plus 2 is 4."]
+    assert run_translator(deltas) == "<think>The user asks 2+2.</think>2 plus 2 is 4."
+
+
+def test_channel_markers_split_at_arbitrary_boundaries():
+    deltas = ["<|chan", "nel>tho", "ught\nreasoning he", "re<chan", "nel|>Answer."]
+    assert run_translator(deltas) == "<think>reasoning here</think>Answer."
+
+
+def test_non_channel_text_passes_through_unchanged():
+    deltas = ["Hello", " there — 2 < 3 and a<b.", " Done."]
+    assert run_translator(deltas) == "Hello there — 2 < 3 and a<b. Done."
+
+
+def test_stray_close_marker_without_open_is_swallowed():
+    # A close with no open must not surface as speakable text (TextFilter
+    # would read a bare '</think>' aloud as punctuation soup).
+    assert run_translator(["<channel|>", "Answer only."]) == "Answer only."
+
+
+def test_unclosed_channel_thought_at_finish_emits_close():
+    # Generation cancelled mid-think: the canonical stream must still close
+    # so TextFilter surfaces the partial reasoning instead of holding it.
+    deltas = ["<|channel>thought\n", "half a thought"]
+    assert run_translator(deltas) == "<think>half a thought</think>"
+
+
+def test_other_channel_names_pass_through():
+    # Only the 'thought' channel is reasoning; future channels (e.g. tool
+    # traffic) must not be silently eaten by this translator.
+    deltas = ["<|channel>tool\n", "payload"]
+    assert run_translator(deltas) == "<|channel>tool\npayload"
+
+
+def test_translator_then_textfilter_end_to_end():
+    t = ChannelThinkTranslator()
+    thoughts: list[str] = []
+    f = TextFilter(on_think=thoughts.append)
+    deltas = ["<|channel>", "thought", "\n", "Deep reasoning.", "<channel|>", "Four."]
+    spoken = "".join(f.feed(t.feed(d)) for d in deltas) + f.feed(t.finish()) + f.finish()
+    assert spoken == "Four."
+    assert thoughts == ["Deep reasoning."]
 
 
 def run_filter(deltas: list[str]) -> str:

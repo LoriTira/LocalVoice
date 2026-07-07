@@ -2,6 +2,14 @@ from collections.abc import Iterator
 
 from localvoice.config import LlmConfig
 from localvoice.llm.base import Message
+from localvoice.textproc.sanitize import ChannelThinkTranslator
+
+
+def is_channel_style(chat_template: str | None) -> bool:
+    """Gemma-4-family templates express reasoning as <|channel>thought blocks
+    rather than Qwen's <think> tags; the raw stream then needs translating to
+    the canonical tags the rest of the pipeline filters on."""
+    return bool(chat_template) and "<|channel>" in chat_template
 
 
 def common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -46,6 +54,7 @@ class MlxLmEngine:
         from mlx_lm import load
 
         self._model, self._tokenizer = load(self._cfg.model)
+        self._channel_style = is_channel_style(getattr(self._tokenizer, "chat_template", None))
         self._reset_cache()
 
     def _reset_cache(self) -> None:
@@ -112,6 +121,12 @@ class MlxLmEngine:
             # never get their whole answer swallowed.
             yield "<think>"
         budget = self._cfg.max_tokens + (self._cfg.think_tokens if think else 0)
+        # Channel-style models (Gemma 4) stream reasoning as
+        # <|channel>thought ... <channel|>; translate to the canonical
+        # <think> tags downstream filters on. Always active for such models
+        # (not just when think=True): a spontaneously opened thought channel
+        # must never reach the speakers either.
+        translator = ChannelThinkTranslator() if self._channel_style else None
         for response in stream_generate(
             self._model,
             self._tokenizer,
@@ -119,4 +134,8 @@ class MlxLmEngine:
             max_tokens=budget,
             prompt_cache=cache,
         ):
-            yield response.text
+            yield translator.feed(response.text) if translator else response.text
+        if translator is not None:
+            tail = translator.finish()
+            if tail:
+                yield tail

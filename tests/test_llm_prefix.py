@@ -1,4 +1,11 @@
-from localvoice.llm.mlx_lm_engine import common_prefix_len
+from localvoice.llm.mlx_lm_engine import common_prefix_len, is_channel_style
+
+
+def test_channel_style_detected_from_template():
+    assert is_channel_style("...{{ '<|channel>thought\\n<channel|>' }}...")
+    assert not is_channel_style("...{% if enable_thinking %}<think>{% endif %}...")
+    assert not is_channel_style(None)
+    assert not is_channel_style("")
 
 
 def test_equal_lists():
