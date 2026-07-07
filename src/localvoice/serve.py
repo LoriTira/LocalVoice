@@ -45,6 +45,7 @@ class Serve:
         player=None,
         capture=None,
         inference=None,
+        tools_factory=None,
     ) -> None:
         self._config_path = Path(config_path)
         self._cfg = cfg
@@ -63,6 +64,7 @@ class Serve:
         self._last_state = None
 
         from localvoice.app import Orchestrator
+        from localvoice.tools import registry_for
         from localvoice.transcript import Transcript
 
         if player is None:
@@ -83,6 +85,8 @@ class Serve:
             tts=self._engines.tts,
             transcript=Transcript(cfg.llm.system_prompt),
             keys_cfg=cfg.keys,
+            tools_cfg=cfg.tools,
+            tools_factory=tools_factory or registry_for,
             inference=self._inference,
             think=cfg.llm.think,
             status=lambda s: None,
@@ -93,6 +97,12 @@ class Serve:
         d.on_assistant_clause = lambda t: self.emit({"event": "assistant_clause", "text": t})
         d.on_thinking = lambda t: self.emit({"event": "reasoning", "text": t})
         d.on_metrics = lambda m: self.emit({"event": "turn_done", "latency": m})
+        d.on_tool_call = lambda name, summary: self.emit(
+            {"event": "tool_call", "name": name, "summary": summary}
+        )
+        d.on_tool_result = lambda name, ok, summary: self.emit(
+            {"event": "tool_result", "name": name, "ok": ok, "summary": summary}
+        )
 
     def _on_drained(self) -> None:
         self._orch.post(Event(EventType.RESPONSE_FINISHED, gen=self._orch._gen))

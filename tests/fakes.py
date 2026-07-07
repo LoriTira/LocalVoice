@@ -16,11 +16,16 @@ class FakeSTT:
 
 
 class FakeLLM:
-    def __init__(self, deltas: list[str]) -> None:
+    def __init__(self, deltas: list[str], supports_tools: bool = True) -> None:
         self.deltas = deltas
         self.last_messages: list[dict] | None = None
         self.last_think: bool | None = None
         self.last_tools: list[dict] | None = None
+        # Mirrors MlxLmEngine: real engines only gain this attribute once
+        # load() has run. Set here (not deferred to load()) so tests can
+        # construct a FakeLLM and read supports_tools without a load() call,
+        # while still defaulting True to match today's serve-test behavior.
+        self.supports_tools = supports_tools
 
     def load(self) -> None:
         pass
@@ -52,6 +57,44 @@ class FakeTTS:
             if self.delay_s:
                 time.sleep(self.delay_s)
             yield np.full(self.chunk_len, 0.1, np.float32)
+
+
+class ScriptedToolLLM:
+    """Returns scripted delta-lists per stream() call and records the
+    messages/tools each round was invoked with. Shared by test_pipeline.py
+    (direct PipelineDeps/run_pipeline) and test_serve.py (full Serve/
+    Orchestrator harness, which needs supports_tools present too)."""
+
+    def __init__(self, rounds, supports_tools: bool = True):  # rounds: list[list[str]]
+        self.rounds = rounds
+        self.calls = []
+        self.supports_tools = supports_tools
+
+    def load(self) -> None:
+        pass
+
+    def stream(self, messages, *, think, tools=None):
+        self.calls.append({"messages": list(messages), "tools": tools})
+        yield from self.rounds[len(self.calls) - 1]
+
+
+class EchoTool:
+    name = "web_search"
+    description = "d"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, args, cancel):
+        self.executed.append(args)
+        from localvoice.tools.base import ToolResult
+
+        return ToolResult(
+            ok=True,
+            content={"results": [{"title": "T", "url": "u", "snippet": "s"}]},
+            summary="found 1 result",
+        )
 
 
 class FakePlayer:

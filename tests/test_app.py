@@ -1,12 +1,12 @@
 import numpy as np
 
 from localvoice.app import Orchestrator
-from localvoice.config import KeysConfig
+from localvoice.config import KeysConfig, ToolsConfig
 from localvoice.events import Event
 from localvoice.events import EventType as E
 from localvoice.events import State as S
 from localvoice.transcript import Transcript
-from tests.fakes import FakeLLM, FakePlayer, FakeSTT, FakeTTS
+from tests.fakes import EchoTool, FakeLLM, FakePlayer, FakeSTT, FakeTTS, ScriptedToolLLM
 
 
 class FakeCapture:
@@ -131,3 +131,64 @@ def test_shutdown_drains_queued_events_before_exit():
     t.join(timeout=5)
     assert not t.is_alive()
     assert "disarm" in capture.log  # both PTT events were processed first
+
+
+def _run_one_turn(orch: Orchestrator) -> None:
+    orch.handle(Event(E.PTT_DOWN))
+    orch.handle(Event(E.PTT_UP, held_ms=400))
+    drain(orch)
+    orch.handle(Event(E.RESPONSE_FINISHED, gen=orch._gen))
+
+
+def test_tools_offered_when_enabled_and_engine_supports_them():
+    tool = EchoTool()
+    tools_cfg = ToolsConfig(enabled=True)
+    llm = ScriptedToolLLM([["Answer."]], supports_tools=True)
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"), llm=llm, tts=FakeTTS(),
+        transcript=transcript, keys_cfg=KeysConfig(), tools_cfg=tools_cfg,
+        tools_factory=lambda cfg: [tool] if cfg.enabled else [], status=lambda s: None,
+    )
+    _run_one_turn(orch)
+    assert llm.calls[0]["tools"] and isinstance(llm.calls[0]["tools"], list)
+
+
+def test_tools_withheld_when_engine_does_not_support_them():
+    """Global Constraints: cfg.tools.enabled alone is not sufficient — a
+    model whose chat template can't render tool calls must never be offered
+    tools, regardless of config."""
+    tool = EchoTool()
+    tools_cfg = ToolsConfig(enabled=True)
+    llm = ScriptedToolLLM([["Answer."]], supports_tools=False)
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"), llm=llm, tts=FakeTTS(),
+        transcript=transcript, keys_cfg=KeysConfig(), tools_cfg=tools_cfg,
+        tools_factory=lambda cfg: [tool] if cfg.enabled else [], status=lambda s: None,
+    )
+    _run_one_turn(orch)
+    assert llm.calls[0]["tools"] is None
+
+
+def test_tools_cfg_hot_applies_at_the_start_of_the_next_turn():
+    """docs/gui.md's `[tools]` hot-apply paragraph: the tool registry is
+    rebuilt from the live ToolsConfig at the START of every turn (inside
+    _start_pipeline), not cached once at Orchestrator construction. Mutating
+    the SAME ToolsConfig object serve.py's set_config would mutate (see
+    Serve._apply_new_config's instant-path setattr) must change what the
+    very next turn offers, with no Orchestrator reconstruction needed."""
+    tool = EchoTool()
+    tools_cfg = ToolsConfig(enabled=True)
+    llm = ScriptedToolLLM([["First."], ["Second."]], supports_tools=True)
+    capture, player, transcript = FakeCapture(), FakePlayer(), Transcript("sys")
+    orch = Orchestrator(
+        capture=capture, player=player, stt=FakeSTT("hi"), llm=llm, tts=FakeTTS(),
+        transcript=transcript, keys_cfg=KeysConfig(), tools_cfg=tools_cfg,
+        tools_factory=lambda cfg: [tool] if cfg.enabled else [], status=lambda s: None,
+    )
+    _run_one_turn(orch)
+    assert llm.calls[0]["tools"] and isinstance(llm.calls[0]["tools"], list)
+    tools_cfg.enabled = False  # mirrors set_config's live-object mutation
+    _run_one_turn(orch)
+    assert llm.calls[1]["tools"] is None

@@ -5,7 +5,7 @@ import numpy as np
 from localvoice.events import EventType as E
 from localvoice.pipeline import PipelineDeps, run_pipeline
 from localvoice.transcript import Transcript
-from tests.fakes import FakeLLM, FakePlayer, FakeSTT, FakeTTS
+from tests.fakes import EchoTool, FakeLLM, FakePlayer, FakeSTT, FakeTTS, ScriptedToolLLM
 
 SR = 16000
 
@@ -155,41 +155,6 @@ def test_metrics_not_emitted_on_cancel():
 # --- tool rounds (Task 6) ---------------------------------------------------
 
 _CALL = '<|tool_call>call:web_search{query:<|"|>rain<|"|>}<tool_call|>'
-
-
-class ScriptedToolLLM:
-    """Returns scripted delta-lists per stream() call and records the
-    messages/tools each round was invoked with."""
-
-    def __init__(self, rounds):  # list[list[str]] — deltas per stream() call
-        self.rounds = rounds
-        self.calls = []
-
-    def load(self) -> None:
-        pass
-
-    def stream(self, messages, *, think, tools=None):
-        self.calls.append({"messages": list(messages), "tools": tools})
-        yield from self.rounds[len(self.calls) - 1]
-
-
-class EchoTool:
-    name = "web_search"
-    description = "d"
-    parameters = {"type": "object", "properties": {}}
-
-    def __init__(self):
-        self.executed = []
-
-    def execute(self, args, cancel):
-        self.executed.append(args)
-        from localvoice.tools.base import ToolResult
-
-        return ToolResult(
-            ok=True,
-            content={"results": [{"title": "T", "url": "u", "snippet": "s"}]},
-            summary="found 1 result",
-        )
 
 
 def test_tool_round_executes_and_speaks_continuation():

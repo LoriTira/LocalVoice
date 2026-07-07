@@ -14,7 +14,7 @@ from localvoice.config import (
 )
 from localvoice.engineset import EngineSet
 from localvoice.serve import Serve
-from tests.fakes import FakeLLM, FakePlayer, FakeSTT, FakeTTS
+from tests.fakes import EchoTool, FakeLLM, FakePlayer, FakeSTT, FakeTTS, ScriptedToolLLM
 
 
 class FakeCapture:
@@ -167,6 +167,89 @@ def test_ptt_turn_emits_transcript_and_turn_done(tmp_path):
     }
     states = [m["state"] for m in events_of(msgs, "state")]
     assert "listening" in states and "processing" in states
+
+
+_CALL = '<|tool_call>call:web_search{query:<|"|>rain<|"|>}<tool_call|>'
+
+
+def test_tool_events_emitted(tmp_path):
+    """A turn scripted for one tool round must surface tool_call then
+    tool_result on the protocol stream, in order, before turn_done — the two
+    new events Task 7 adds, emitted through the same locked emitter path as
+    every other pipeline callback (see on_thinking's `reasoning` wiring)."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    tool = EchoTool()
+    llm = ScriptedToolLLM([["Let me check. ", _CALL], ["It will rain at noon."]])
+    factories = {
+        "stt": lambda c: FakeSTT("what's the weather"),
+        "llm": lambda c: llm,
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [{"cmd": "ptt_down"}, {"cmd": "ptt_up", "held_ms": 500}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+        # Swaps the real registry_for (which would build the actual
+        # WebSearchTool) for a fake registry offering just EchoTool, the
+        # same substitution EngineSet(cfg, factories=...) does for engines.
+        tools_factory=lambda tools_cfg: [tool],
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    msgs = [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    call_ev = events_of(msgs, "tool_call")
+    result_ev = events_of(msgs, "tool_result")
+    assert call_ev == [
+        {"event": "tool_call", "name": "web_search", "summary": "calling web_search"}
+    ]
+    assert result_ev == [
+        {"event": "tool_result", "name": "web_search", "ok": True, "summary": "found 1 result"}
+    ]
+    call_idx = msgs.index(call_ev[0])
+    result_idx = msgs.index(result_ev[0])
+    turn_done_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "turn_done")
+    assert call_idx < result_idx < turn_done_idx
+    assert llm.calls[0]["tools"] and isinstance(llm.calls[0]["tools"], list)
+
+
+def test_tools_not_offered_without_template_support(tmp_path):
+    """A model whose chat template can't render tool calls (supports_tools is
+    False after load()) must never be offered tools, even with
+    cfg.tools.enabled = True — Global Constraints: tools are config-gated
+    AND template-gated, template support wins when the model can't accept
+    them."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    assert cfg.tools.enabled is True  # precondition: config alone would allow tools
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+    llm = FakeLLM(["No tools here."], supports_tools=False)
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: llm,
+        "tts": lambda c: FakeTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+    commands = [{"cmd": "ptt_down"}, {"cmd": "ptt_up", "held_ms": 500}, {"cmd": "shutdown"}]
+    stdin = io.StringIO("".join(json.dumps(c) + "\n" for c in commands))
+    stdout = io.StringIO()
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True, stdin=stdin, stdout=stdout,
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=InstantExecutor(),
+    )
+    s._exit = lambda code: None
+    s.run()
+    time.sleep(0.3)
+    assert llm.last_tools is None
+    assert not events_of([json.loads(line) for line in stdout.getvalue().splitlines()], "tool_call")
 
 
 def test_set_config_instant_and_overlay(tmp_path):
