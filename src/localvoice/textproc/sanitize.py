@@ -224,11 +224,20 @@ def strip_special_markers(text: str) -> str:
     ``<|...|>``/``<|...>`` family plus the bare closing forms and
     ``<think>``/``</think>``) and leaves every other character -- including
     standalone ``<``, ``|``, ``>`` -- untouched.
+
+    Stripping iterates to a FIXED POINT: a single pass is the textbook
+    sanitizer bypass, because deleting an inner marker can fuse its
+    surroundings into a fresh, live one (``<<|channel>|channel>thought``
+    single-passes to ``<|channel>thought``). Each pass strictly shrinks the
+    string, so termination is guaranteed.
     """
-    text = _SPECIAL_MARKER_RE.sub("", text)
-    for marker in _BARE_SPECIAL_MARKERS:
-        text = text.replace(marker, "")
-    return text
+    while True:
+        stripped = _SPECIAL_MARKER_RE.sub("", text)
+        for marker in _BARE_SPECIAL_MARKERS:
+            stripped = stripped.replace(marker, "")
+        if stripped == text:
+            return stripped
+        text = stripped
 
 
 def strip_speech_markup(text: str) -> str:
