@@ -23,7 +23,15 @@ targets:
   LocalVoiceTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [Tests]
+    sources:
+      - path: Tests
+        excludes: ["Fixtures/**"]
+      # Bundled as a resource so tests never read the repo checkout at
+      # runtime: a checkout under ~/Desktop sits behind macOS folder TCC,
+      # and the app-hosted test process losing that grant (e.g. after a
+      # rebuild changes the ad-hoc code identity) fails the fixture copy.
+      - path: Tests/Fixtures
+        buildPhase: resources
     dependencies:
       - target: LocalVoice
     settings:

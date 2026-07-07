@@ -20,10 +20,21 @@ final class EngineClientTests: XCTestCase {
     /// to `NSTemporaryDirectory()` sidesteps the interaction regardless of
     /// where the repo checkout lives, which also matches how CI's checkout
     /// path (never under a protected folder) behaves.
+    /// The fixture is read from the TEST BUNDLE, never from the repo
+    /// checkout: a checkout under ~/Desktop sits behind macOS folder TCC,
+    /// and the app-hosted test process can lose that grant whenever a
+    /// rebuild changes the ad-hoc code identity — which failed every test
+    /// in this suite at setUp. The bundle copy is placed at build time by
+    /// xcodebuild (running with the terminal's own grants), so runtime
+    /// needs no protected-folder access at all.
     private static var fixtureSourceURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("Fixtures/fake_engine.sh")
+        guard
+            let url = Bundle(for: EngineClientTests.self)
+                .url(forResource: "fake_engine", withExtension: "sh")
+        else {
+            fatalError("fake_engine.sh missing from test bundle resources — check project.yml")
+        }
+        return url
     }
 
     private var stagedFixtureURL: URL!
