@@ -10,7 +10,10 @@ native macOS app and a terminal CLI, both driving the same local engine.
 Hold **right ⌘** and talk. Release it, and LocalVoice transcribes what you
 said, sends it to a local LLM, and speaks the answer back through your
 speakers as it's generated — the first words of the reply start playing
-before the model has finished thinking of the rest.
+before the model has finished thinking of the rest. If the model needs
+current information it can search the web mid-answer (DuckDuckGo, free, no
+keys) — you hear a short pause, then the answer; the app shows what it
+searched.
 
 - **Esc** stops the current response immediately (or discards the current
   recording if you're still holding the key).
@@ -185,7 +188,9 @@ strategy, and the phased roadmap, is
 `LocalVoice.app` is a native SwiftUI app (macOS 15+) that drives the same
 engine as the CLI, over the line-delimited JSON protocol `localvoice serve`
 speaks on stdio — a Talk view with the live transcript, reasoning, mic
-level, and per-turn latency; a Settings pane generated from the engine's
+level, and per-turn latency, and, when the model decides it needs them,
+free web-search tool calls whose progress shows live under the state orb;
+a Settings pane generated from the engine's
 own config schema (every key editable live, plus a **Restore defaults**
 button that resets everything except your model assignments — the shipped
 default model is a Hugging Face repo id, and resetting to it would trigger

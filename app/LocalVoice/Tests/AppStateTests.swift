@@ -293,6 +293,52 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.banner, "bad json: unexpected end of input")
     }
 
+    // MARK: - Tool activity
+
+    /// `.toolCall` sets `toolActivity` to its `summary`; a subsequent
+    /// `.toolResult(ok: true)` does NOT clear it immediately — it updates to
+    /// the result's own summary and stays visible until `turnDone`, per the
+    /// brief's Produces contract ("cleared on turnDone... after the turn
+    /// continues", not cleared the instant a successful result arrives).
+    func testToolCallSetsActivityThenOkResultUpdatesAndTurnDoneClears() {
+        let state = AppState()
+        state.reduce(.engine(.toolCall(name: "web_search", summary: "calling web_search")))
+        XCTAssertEqual(state.toolActivity, "calling web_search")
+
+        state.reduce(.engine(.toolResult(name: "web_search", ok: true, summary: "found 5 results")))
+        XCTAssertEqual(state.toolActivity, "found 5 results", "ok:true keeps the LAST summary visible until turnDone")
+
+        let latency = Latency(stt: 0.1, ttft: 0.1, firstClause: 0.1, ttsFirst: 0.1, total: 0.4)
+        state.reduce(.engine(.turnDone(latency)))
+        XCTAssertNil(state.toolActivity, "turnDone clears toolActivity")
+    }
+
+    /// A failed tool result shows its own summary (so the failure reads out
+    /// to the user) rather than being cleared or left at the prior call's
+    /// summary; entering the "idle" state clears it in all cases.
+    func testToolResultFailureShowsSummaryAndIdleStateClears() {
+        let state = AppState()
+        state.reduce(.engine(.toolCall(name: "web_search", summary: "calling web_search")))
+        state.reduce(.engine(.toolResult(name: "web_search", ok: false, summary: "search failed: network unreachable")))
+        XCTAssertEqual(state.toolActivity, "search failed: network unreachable")
+
+        state.reduce(.engine(.state("idle")))
+        XCTAssertNil(state.toolActivity, "entering idle clears toolActivity in all cases")
+    }
+
+    /// `state == "idle"` clears `toolActivity` even without an intervening
+    /// `turnDone` (e.g. after an aborted/failed turn) — pinned separately
+    /// from the `turnDone` clear path since the brief specifies both as
+    /// independent clearing triggers.
+    func testIdleStateClearsToolActivityEvenWithoutTurnDone() {
+        let state = AppState()
+        state.reduce(.engine(.toolCall(name: "web_search", summary: "calling web_search")))
+        XCTAssertEqual(state.toolActivity, "calling web_search")
+
+        state.reduce(.engine(.state("idle")))
+        XCTAssertNil(state.toolActivity)
+    }
+
     // MARK: - Helpers
 
     private func makeSchemaField(key: String) -> SchemaField {

@@ -65,6 +65,8 @@ enum EngineEvent: Equatable {
     case userText(String)
     case assistantClause(String)
     case reasoning(String)
+    case toolCall(name: String, summary: String)
+    case toolResult(name: String, ok: Bool, summary: String)
     case turnDone(Latency)
     case level(Double)
     case loadProgress(engine: String, phase: String, seconds: Double?)
@@ -111,6 +113,19 @@ extension EngineEvent {
         case "reasoning":
             guard case let .string(text)? = root["text"] else { return nil }
             return .reasoning(text)
+
+        case "tool_call":
+            guard case let .string(name)? = root["name"],
+                  case let .string(summary)? = root["summary"]
+            else { return nil }
+            return .toolCall(name: name, summary: summary)
+
+        case "tool_result":
+            guard case let .string(name)? = root["name"],
+                  case let .bool(ok)? = root["ok"],
+                  case let .string(summary)? = root["summary"]
+            else { return nil }
+            return .toolResult(name: name, ok: ok, summary: summary)
 
         case "turn_done":
             guard let latencyValue = root["latency"],
