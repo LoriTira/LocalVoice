@@ -48,30 +48,43 @@ class ScreenshotTool:
         fd, tmp_png = tempfile.mkstemp(suffix=".png")
         os.close(fd)  # screencapture writes to the path itself, not this fd
 
-        capture = subprocess.run(
-            ["screencapture", "-x", tmp_png],  # -x: silent, no camera-shutter sound
-            capture_output=True,
-            timeout=_TIMEOUT_S,
-            check=False,
-        )
-        path = Path(tmp_png)
-        size = path.stat().st_size if path.exists() else 0
-        if capture.returncode != 0 or size < _MIN_VALID_BYTES:
+        # Own the temp file's whole lifecycle here: on every path that does
+        # NOT hand it downstream (failure, a subprocess timeout, cancellation
+        # after creation) the tool unlinks it — nothing else ever learns the
+        # path, so no later component could. Only the success path suppresses
+        # the cleanup and passes ownership on via image_path.
+        keep = False
+        try:
+            capture = subprocess.run(
+                ["screencapture", "-x", tmp_png],  # -x: silent, no camera-shutter sound
+                capture_output=True,
+                timeout=_TIMEOUT_S,
+                check=False,
+            )
+            path = Path(tmp_png)
+            size = path.stat().st_size if path.exists() else 0
+            if capture.returncode != 0 or size < _MIN_VALID_BYTES:
+                return _capture_failed()
+
+            # Best-effort downscale so the image doesn't blow the vision
+            # engine's token budget; the full-size capture already passed the
+            # checks above, so a downscale hiccup is not a capture failure.
+            subprocess.run(
+                ["sips", "--resampleHeightWidthMax", "1536", tmp_png],
+                capture_output=True,
+                timeout=_TIMEOUT_S,
+                check=False,
+            )
+
+            keep = True
+            return ToolResult(
+                ok=True,
+                content={"status": "screenshot captured"},
+                summary="Captured the screen",
+                image_path=tmp_png,
+            )
+        except subprocess.TimeoutExpired:
             return _capture_failed()
-
-        # Best-effort downscale so the image doesn't blow the vision engine's
-        # token budget; the full-size capture already passed the checks above,
-        # so a downscale hiccup is not treated as a capture failure.
-        subprocess.run(
-            ["sips", "--resampleHeightWidthMax", "1536", tmp_png],
-            capture_output=True,
-            timeout=_TIMEOUT_S,
-            check=False,
-        )
-
-        return ToolResult(
-            ok=True,
-            content={"status": "screenshot captured"},
-            summary="Captured the screen",
-            image_path=tmp_png,
-        )
+        finally:
+            if not keep:
+                Path(tmp_png).unlink(missing_ok=True)

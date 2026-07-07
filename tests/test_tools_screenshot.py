@@ -1,6 +1,7 @@
 import subprocess
 import tempfile
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -103,6 +104,59 @@ def test_screenshot_cancelled_before_capture(monkeypatch):
 
     assert r.ok is False and r.content == {"error": "cancelled"}
     assert calls == []  # screencapture/sips never invoked
+
+
+def _pngs_in(tmp_path) -> list:
+    return list(tmp_path.glob("*.png"))
+
+
+def test_screenshot_failure_unlinks_its_temp_file(monkeypatch, tmp_path):
+    # A denied/failed capture must not leak the temp file it created: nothing
+    # downstream ever learns the path on the failure branch, so the tool is
+    # the only thing that can clean it up.
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "screencapture":
+            _write_capture(cmd, 10)  # tiny -> treated as failure
+        return _completed(0)
+
+    monkeypatch.setattr("localvoice.tools.screenshot.subprocess.run", fake_run)
+    r = ScreenshotTool(ToolsConfig()).execute({}, NO_CANCEL)
+
+    assert r.ok is False and r.image_path is None
+    assert _pngs_in(tmp_path) == []  # no orphaned capture left behind
+
+
+def test_screenshot_timeout_unlinks_its_temp_file(monkeypatch, tmp_path):
+    # A subprocess timeout mid-capture must also clean up rather than escape
+    # as an uncaught exception dragging a leaked file with it.
+    def fake_run(cmd, **kwargs):
+        _write_capture(cmd, 4096)  # file exists on disk when the timeout hits
+        raise subprocess.TimeoutExpired(cmd, _kwargs_timeout(kwargs))
+
+    monkeypatch.setattr("localvoice.tools.screenshot.subprocess.run", fake_run)
+    r = ScreenshotTool(ToolsConfig()).execute({}, NO_CANCEL)
+
+    assert r.ok is False and r.summary == "Could not capture the screen"
+    assert _pngs_in(tmp_path) == []
+
+
+def _kwargs_timeout(kwargs):
+    return kwargs.get("timeout", 0)
+
+
+def test_screenshot_success_keeps_its_temp_file(monkeypatch, tmp_path):
+    # The mirror image: the success path must NOT unlink -- it hands the file
+    # downstream via image_path for the pipeline to consume then delete.
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "screencapture":
+            _write_capture(cmd, 2048)
+        return _completed(0)
+
+    monkeypatch.setattr("localvoice.tools.screenshot.subprocess.run", fake_run)
+    r = ScreenshotTool(ToolsConfig()).execute({}, NO_CANCEL)
+
+    assert r.ok is True and r.image_path is not None
+    assert _pngs_in(tmp_path) == [Path(r.image_path)]
 
 
 def test_screenshot_tool_schema_and_gating_flag():
