@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -218,6 +219,77 @@ def test_tool_events_emitted(tmp_path):
     turn_done_idx = next(i for i, m in enumerate(msgs) if m.get("event") == "turn_done")
     assert call_idx < result_idx < turn_done_idx
     assert llm.calls[0]["tools"] and isinstance(llm.calls[0]["tools"], list)
+
+
+def test_pipeline_error_surfaces_as_protocol_error_event(tmp_path):
+    """A pipeline-level crash mid-turn must reach the GUI as an {"event":
+    "error", ...} protocol message. Regression guard for the finding that
+    serve constructed the Orchestrator with status=lambda s: None, so
+    A.REPORT_ERROR's status call (the only surfacing of PIPELINE_ERROR) was
+    swallowed — a real user saw the assistant silently go idle with no banner.
+
+    The TTS raises during synthesis (same mechanism as
+    test_pipeline.py::test_error_emits_pipeline_error). Uses a real inference
+    thread (like production) so the pipeline runs off the orchestrator loop
+    thread, and only sends shutdown AFTER the error event is observed — a
+    shutdown that races the turn would cancel it and suppress the error emit
+    (pipeline.py guards emit on `not cancel.is_set()`)."""
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
+    cfg_path = tmp_path / "localvoice.toml"
+    cfg_path.write_text("")
+
+    class BoomTTS(FakeTTS):
+        def synthesize(self, text):
+            raise RuntimeError("kaboom")
+            yield  # pragma: no cover
+
+    factories = {
+        "stt": lambda c: FakeSTT("hello there"),
+        "llm": lambda c: FakeLLM(["Hi from the fake. ", "More words."]),
+        "tts": lambda c: BoomTTS(),
+    }
+    es = EngineSet(cfg, factories=factories)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    emitted: list[dict] = []
+    saw_error = threading.Event()
+
+    class _CollectingStdout:
+        def write(self, s: str) -> None:
+            for line in s.splitlines():
+                if line.strip():
+                    obj = json.loads(line)
+                    emitted.append(obj)
+                    if obj.get("event") == "error":
+                        saw_error.set()
+
+        def flush(self) -> None:
+            pass
+
+    class _ScriptedStdin:
+        """Yields ptt_down/ptt_up, then blocks until the error is observed
+        before yielding shutdown, so shutdown never cancels the in-flight turn."""
+
+        def __iter__(self):
+            yield json.dumps({"cmd": "ptt_down"})
+            yield json.dumps({"cmd": "ptt_up", "held_ms": 500})
+            saw_error.wait(timeout=5)
+            yield json.dumps({"cmd": "shutdown"})
+
+    inference = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inference")
+    s = Serve(
+        config_path=cfg_path, cfg=cfg, allow_inject=True,
+        stdin=_ScriptedStdin(), stdout=_CollectingStdout(),
+        engine_set=es, player=FakePlayer(), capture=FakeCapture(),
+        inference=inference,
+    )
+    s._exit = lambda code: None
+    s.run()
+    inference.shutdown(wait=True)
+    assert saw_error.is_set(), f"no error event emitted: {[m.get('event') for m in emitted]}"
+    errors = events_of(emitted, "error")
+    assert any("kaboom" in m["message"] for m in errors), emitted
 
 
 def test_tools_not_offered_without_template_support(tmp_path):

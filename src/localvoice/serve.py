@@ -89,7 +89,7 @@ class Serve:
             tools_factory=tools_factory or registry_for,
             inference=self._inference,
             think=cfg.llm.think,
-            status=lambda s: None,
+            status=self._status,
             on_state=self._on_state,
         )
         d = self._orch._deps
@@ -103,6 +103,18 @@ class Serve:
         d.on_tool_result = lambda name, ok, summary: self.emit(
             {"event": "tool_result", "name": name, "ok": ok, "summary": summary}
         )
+
+    def _status(self, line: str) -> None:
+        """Orchestrator status sink for serve/GUI mode. Every user-facing signal
+        the GUI needs (state, user_text, reasoning, tool_call/result, metrics)
+        already flows through its own protocol event, so those status lines are
+        dropped here. The one exception is A.REPORT_ERROR, which surfaces a
+        PIPELINE_ERROR only through this status callback (`error: <message>`) —
+        without this the crash was invisible to the GUI. Forward it as the
+        existing {"event": "error", ...} protocol event. Terminal mode uses the
+        Orchestrator's default status=print and keeps its stderr behavior."""
+        if line.startswith("error: "):
+            self.emit({"event": "error", "message": line[len("error: ") :]})
 
     def _on_drained(self) -> None:
         self._orch.post(Event(EventType.RESPONSE_FINISHED, gen=self._orch._gen))
