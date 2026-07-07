@@ -15,6 +15,8 @@ dependencies = [
   "huggingface_hub>=0.26",
   "misaki[en]>=0.8",
   "tomli-w>=1.0",
+  "ddgs>=9",
+  "trafilatura>=2",
 ]
 
 [project.scripts]
