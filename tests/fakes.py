@@ -72,10 +72,16 @@ class ScriptedToolLLM:
     (direct PipelineDeps/run_pipeline) and test_serve.py (full Serve/
     Orchestrator harness, which needs supports_tools present too)."""
 
-    def __init__(self, rounds, supports_tools: bool = True):  # rounds: list[list[str]]
+    def __init__(
+        self, rounds, supports_tools: bool = True, supports_images: bool = False
+    ):  # rounds: list[list[str]]
         self.rounds = rounds
         self.calls = []
         self.supports_tools = supports_tools
+        # Mirrors MlxLmEngine/MlxVlmEngine's capability flags (T3): defaults
+        # False like the plain text engine, so every pre-T3 call site that
+        # never mentions supports_images keeps behaving exactly as before.
+        self.supports_images = supports_images
         self.last_image_path: str | None = None
 
     def load(self) -> None:
