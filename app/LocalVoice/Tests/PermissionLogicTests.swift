@@ -58,4 +58,24 @@ final class PermissionLogicTests: XCTestCase {
             "Microphone access is denied. Open System Settings to allow it. Input Monitoring is not granted."
         )
     }
+
+    /// Tests for `screenRecordingStatusText(granted:)`, the pure helper
+    /// behind the Screen Recording card added in tools phase T3 Task 5.
+    /// `CGPreflightScreenCaptureAccess()` is already a plain grant/no-grant
+    /// `Bool` — no `.notDetermined`-style third state the way Microphone's
+    /// `AVAuthorizationStatus` has — so this helper is a direct two-case
+    /// mapping, not a three-way collapse like `permissionSummary`'s `mic`
+    /// parameter above. It is deliberately a separate function rather than
+    /// a third parameter on `permissionSummary`: Screen Recording is
+    /// excluded from that combined summary sentence (see
+    /// `SetupView.screenRecordingCard`'s doc comment for why), so it gets
+    /// its own tiny pure helper — and its own tests — instead of growing
+    /// the six-case matrix above into a twelve-case one.
+    func testScreenRecordingStatusTextGranted() {
+        XCTAssertEqual(screenRecordingStatusText(granted: true), "Granted.")
+    }
+
+    func testScreenRecordingStatusTextNotGranted() {
+        XCTAssertEqual(screenRecordingStatusText(granted: false), "Not granted.")
+    }
 }

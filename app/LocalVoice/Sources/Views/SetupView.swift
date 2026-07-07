@@ -48,10 +48,32 @@ func permissionSummary(mic: Bool?, inputMonitoring: Bool) -> String {
     return "\(micSentence) \(inputMonitoringSentence)"
 }
 
+/// Maps `CGPreflightScreenCaptureAccess()`'s boolean straight to the Screen
+/// Recording card's status line — the pure, testable half of that card
+/// (see `PermissionLogicTests`), added in tools phase T3 Task 5. Unlike
+/// Microphone's `AVAuthorizationStatus` there is no "not yet requested"
+/// state to collapse here: the preflight call is already a plain
+/// grant/no-grant boolean (same shape as Input Monitoring's
+/// `CGPreflightListenEventAccess()`), so this is a direct two-case naming,
+/// not a three-way collapse like `permissionSummary`'s `mic` parameter.
+///
+/// Deliberately a separate function from `permissionSummary` above, not an
+/// extra parameter on it — Screen Recording gates only the optional
+/// `look_at_screen` tool and has no bearing on the core push-to-talk loop,
+/// so it does not belong in the mic + Input Monitoring summary sentence.
+/// See `SetupView.screenRecordingCard`'s doc comment for the full
+/// rationale.
+///
+/// Sentence case, no emoji, no exclamation marks, matching every other
+/// permission string in this file.
+func screenRecordingStatusText(granted: Bool) -> String {
+    granted ? "Granted." : "Not granted."
+}
+
 /// Permission onboarding + engine diagnostics — the fourth sidebar
 /// destination (`docs/superpowers/specs/2026-07-03-localvoice-gui-design.md`
 /// § Views: "Setup — permission checks with deep links … live re-check on
-/// focus, engine status and versions"). Three cards:
+/// focus, engine status and versions"). Four cards:
 ///
 /// 1. **Microphone** — `AVCaptureDevice.authorizationStatus(for: .audio)`,
 ///    a request button while `.notDetermined`, and a deep link to the
@@ -65,13 +87,20 @@ func permissionSummary(mic: Bool?, inputMonitoring: Bool) -> String {
 ///    for the prompt (this API isn't gated on "not yet asked" the way
 ///    `AVCaptureDevice` is, so its request button is always available),
 ///    plus a deep link to the Input Monitoring pane.
-/// 3. **Engine** — live connection state, the protocol version this build
+/// 3. **Screen Recording** (tools phase T3 Task 5) — `CGPreflightScreenCaptureAccess()`
+///    for status, `CGRequestScreenCaptureAccess()` for the prompt, and a
+///    deep link to the Screen Recording pane. Gates only the optional
+///    `look_at_screen` tool, not the core push-to-talk loop — so, unlike
+///    the first two cards, its grant state is deliberately left out of
+///    `summaryLine` / `permissionSummary`; see `screenRecordingCard`'s doc
+///    comment for why.
+/// 4. **Engine** — live connection state, the protocol version this build
 ///    speaks, an editable dev-checkout path (`UserDefaults`-backed, same
 ///    key `LocalVoiceApp` reads at launch), and a restart button that
 ///    stops then restarts the engine subprocess so a path edit takes
 ///    effect without quitting the app.
 ///
-/// Both permission statuses re-check on `NSApplication.didBecomeActiveNotification`
+/// All three permission statuses re-check on `NSApplication.didBecomeActiveNotification`
 /// — the only reliable signal that the user might have just come back from
 /// System Settings (macOS gives no direct "permission changed" callback).
 struct SetupView: View {
@@ -87,6 +116,7 @@ struct SetupView: View {
 
     @State private var micStatus: AVAuthorizationStatus = .notDetermined
     @State private var inputMonitoringGranted: Bool = false
+    @State private var screenRecordingGranted: Bool = false
     @State private var devCheckoutPath: String = ""
 
     var body: some View {
@@ -95,6 +125,7 @@ struct SetupView: View {
                 summaryLine
                 microphoneCard
                 inputMonitoringCard
+                screenRecordingCard
                 engineCard
             }
             .padding()
@@ -213,6 +244,53 @@ struct SetupView: View {
         }
     }
 
+    // MARK: - Screen Recording card
+
+    /// Screen Recording gates only the optional `look_at_screen` tool
+    /// (tools phase T3): when this permission is missing, `screencapture`
+    /// silently writes a near-empty file instead of erroring, and the
+    /// Python tool detects that and returns a graceful, spoken-friendly
+    /// failure (`ToolResult(ok: false, ...)`; see
+    /// `src/localvoice/tools/screenshot.py`'s `_capture_failed()`) — it
+    /// never blocks or degrades the microphone/Input Monitoring
+    /// push-to-talk loop that `permissionSummary` describes. That is why,
+    /// unlike the mic and Input Monitoring cards above, this card's grant
+    /// state is NOT folded into `summaryLine` / `permissionSummary`: that
+    /// sentence is reserved for the two permissions the core interaction
+    /// loop cannot work without, and adding a third, feature-scoped,
+    /// often-never-needed permission to it would dilute the signal for the
+    /// two that actually matter every time this pane is opened.
+    ///
+    /// Structurally this mirrors `inputMonitoringCard`: a status line from
+    /// the preflight check, a request button shown only while not granted
+    /// (the preflight API has no "not yet asked" state to gate on, so —
+    /// same as Input Monitoring — the button is simply always offered
+    /// until granted), and a deep link to the pane. There is no
+    /// `available`-vs-preflight split like Input Monitoring's, though:
+    /// there is no live resource here comparable to the `CGEventTap` whose
+    /// own success could disagree with the preflight read, so the
+    /// preflight boolean is the only signal there is.
+    private var screenRecordingCard: some View {
+        card(title: "Screen Recording", symbolName: "display") {
+            Text(screenRecordingStatusText(granted: screenRecordingGranted))
+                .font(.body)
+            Text("Needed only for the look-at-my-screen tool. The screen is captured only when you ask.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                if !screenRecordingGranted {
+                    Button("Request Access") {
+                        _ = CGRequestScreenCaptureAccess()
+                        refreshPermissions()
+                    }
+                }
+                Button("Open System Settings") {
+                    openSystemSettings(pane: "Privacy_ScreenCapture")
+                }
+            }
+        }
+    }
+
     // MARK: - Engine card
 
     private var engineCard: some View {
@@ -273,13 +351,15 @@ struct SetupView: View {
     private func refreshPermissions() {
         micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         inputMonitoringGranted = CGPreflightListenEventAccess()
+        screenRecordingGranted = CGPreflightScreenCaptureAccess()
     }
 
     /// Opens the given Security & Privacy sub-pane via the
     /// `x-apple.systempreferences:` deep-link scheme — `pane` is one of
-    /// `"Privacy_Microphone"` / `"Privacy_ListenEvent"` per the task-7
-    /// contract. Does not require Input Monitoring or Microphone access
-    /// itself; this is a plain URL open.
+    /// `"Privacy_Microphone"` / `"Privacy_ListenEvent"` / `"Privacy_ScreenCapture"`
+    /// (the last added in tools phase T3 Task 5) per the task-7 contract.
+    /// Does not require Input Monitoring, Microphone, or Screen Recording
+    /// access itself; this is a plain URL open.
     private func openSystemSettings(pane: String) {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
         NSWorkspace.shared.open(url)
