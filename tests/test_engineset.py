@@ -27,9 +27,17 @@ class Boom(Fake):
 
 
 def make_set(llm_factory=Fake):
-    from localvoice.config import AudioConfig, Config, KeysConfig, LlmConfig, SttConfig, TtsConfig
+    from localvoice.config import (
+        AudioConfig,
+        Config,
+        KeysConfig,
+        LlmConfig,
+        SttConfig,
+        ToolsConfig,
+        TtsConfig,
+    )
 
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     factories = {"stt": Fake, "llm": llm_factory, "tts": Fake}
     return cfg, EngineSet(cfg, factories=factories)
 

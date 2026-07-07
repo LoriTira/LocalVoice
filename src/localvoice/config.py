@@ -50,12 +50,23 @@ class AudioConfig:
 
 
 @dataclass
+class ToolsConfig:
+    enabled: bool = True
+    web_search: bool = True
+    screenshot: bool = False  # ships in T3; key exists so settings stay stable
+    max_rounds: int = 3
+    search_results: int = 5
+    page_char_cap: int = 8000
+
+
+@dataclass
 class Config:
     stt: SttConfig
     llm: LlmConfig
     tts: TtsConfig
     keys: KeysConfig
     audio: AudioConfig
+    tools: ToolsConfig
 
 
 _SECTIONS = {
@@ -64,6 +75,7 @@ _SECTIONS = {
     "tts": TtsConfig,
     "keys": KeysConfig,
     "audio": AudioConfig,
+    "tools": ToolsConfig,
 }
 
 

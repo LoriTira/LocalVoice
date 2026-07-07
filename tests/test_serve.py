@@ -3,7 +3,15 @@ import json
 import time
 from pathlib import Path
 
-from localvoice.config import AudioConfig, Config, KeysConfig, LlmConfig, SttConfig, TtsConfig
+from localvoice.config import (
+    AudioConfig,
+    Config,
+    KeysConfig,
+    LlmConfig,
+    SttConfig,
+    ToolsConfig,
+    TtsConfig,
+)
 from localvoice.engineset import EngineSet
 from localvoice.serve import Serve
 from tests.fakes import FakeLLM, FakePlayer, FakeSTT, FakeTTS
@@ -107,7 +115,7 @@ class ManualExecutor:
 def build(
     tmp_path: Path, commands: list[dict], capture=None, raw_lines: list[str] | None = None
 ) -> list[dict]:
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {
@@ -329,7 +337,7 @@ def test_set_config_system_prompt_hot_applies_to_next_turn(tmp_path):
     the very next turn's first LLM call already carries the new prompt —
     not just the Serve-level Config object, which the pipeline never reads
     directly."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     fake_llm = FakeLLM(["Hi from the fake. ", "More words."])
@@ -366,7 +374,7 @@ def test_boot_load_failure_then_recovery_via_reload(tmp_path):
     and a client that fixes the config (set_config llm.model -> reload)
     must be able to complete the boot via the normal reload path, with
     engines_ready firing once the recovered engine finishes loading."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
 
@@ -435,7 +443,7 @@ def test_boot_load_failure_then_recovery_via_reload(tmp_path):
 def test_preview_voice_restores_original_voice_and_reaches_player(tmp_path):
     """preview_voice must synthesize through the real player and restore the
     configured voice afterward, in the ordinary (non-concurrent) case."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     original_voice = cfg.tts.voice
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
@@ -467,7 +475,7 @@ def test_preview_voice_cas_restore_does_not_clobber_concurrent_set_config(tmp_pa
     preview's finally block must not blindly stomp that concurrent change
     back to the pre-preview voice. Compare-and-swap semantics: only restore
     if the live voice is still what preview itself set."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
 
@@ -519,7 +527,7 @@ def test_ptt_down_before_engines_ready_yields_error(tmp_path):
     never a crash or a silently-dropped command. Using ManualExecutor to
     defer the load job proves this holds even in the window before
     _load_engines has been executed at all -- not just while it's running."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {
@@ -553,7 +561,7 @@ def test_restart_audio_stops_then_starts_the_player(tmp_path):
     restart path (which now also re-arms PlaybackQueue's rebuffer gate via
     AudioPlayer.start(), item 4) really runs, not just that config_applied
     fires."""
-    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig())
+    cfg = Config(SttConfig(), LlmConfig(), TtsConfig(), KeysConfig(), AudioConfig(), ToolsConfig())
     cfg_path = tmp_path / "localvoice.toml"
     cfg_path.write_text("")
     factories = {

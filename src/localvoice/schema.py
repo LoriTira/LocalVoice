@@ -8,6 +8,7 @@ from localvoice.config import (
     KeysConfig,
     LlmConfig,
     SttConfig,
+    ToolsConfig,
     TtsConfig,
 )
 
@@ -17,6 +18,7 @@ _SECTIONS = [
     ("tts", TtsConfig, "Speech"),
     ("keys", KeysConfig, "Keys"),
     ("audio", AudioConfig, "Audio"),
+    ("tools", ToolsConfig, "Tools"),
 ]
 
 _TYPE_NAMES = {bool: "bool", int: "int", float: "float", str: "str"}
@@ -43,6 +45,12 @@ _ANNOTATIONS: dict[str, dict] = {
         "widget": "slider", "minimum": 100, "maximum": 800, "step": 50,
         "help": "Anti-stutter gate after a mid-response stall.",
     },
+    "tools.enabled": {"help": "Enable tool calling and web search."},
+    "tools.web_search": {"help": "Allow web search for current information."},
+    "tools.screenshot": {"help": "Allow screenshot access (available in T3+)."},
+    "tools.max_rounds": {"help": "Maximum tool-call rounds per conversation turn."},
+    "tools.search_results": {"help": "Number of search results to fetch per query."},
+    "tools.page_char_cap": {"help": "Character limit for fetched web pages."},
 }
 
 
