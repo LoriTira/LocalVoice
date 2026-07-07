@@ -165,4 +165,10 @@ class ToolCallParser:
             self._capturing = False
             self._done = True
             self._buf = ""
-        return ""
+            return ""
+        # Passthrough state: the buffer holds a suffix held back only because
+        # it COULD have begun a marker ("<", "<|tool_ca", ...). The stream is
+        # over, so it never will — release it as the literal speech it is,
+        # exactly as ChannelThinkTranslator.finish/TextFilter.finish do.
+        out, self._buf = self._buf, ""
+        return out

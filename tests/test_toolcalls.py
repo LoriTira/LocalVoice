@@ -55,3 +55,12 @@ def test_malformed_body_flags_not_raises():
 def test_unclosed_call_at_finish_is_malformed():
     out, p = run(["<|tool_call>call:web_search{query:<|\"|>x<|\"|>}"])
     assert out == "" and p.call is not None and p.malformed is True
+
+
+def test_finish_releases_held_partial_marker_as_speech():
+    # A reply legitimately ending on characters that prefix the open marker
+    # must not lose its tail: the hold-back is released at end of stream.
+    out, p = run(["It costs less than $5 <"])
+    assert out == "It costs less than $5 <" and p.call is None
+    out, p = run(["hello ", "<|tool_ca"])  # false start that never completes
+    assert out == "hello <|tool_ca" and p.call is None
