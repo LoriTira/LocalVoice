@@ -20,6 +20,14 @@ dependencies = [
 [project.scripts]
 localvoice = "localvoice.__main__:main"
 
+[tool.uv]
+# mlx-audio 0.4.1 (pinned above for its post-0.4.1 Kokoro/SineGen regression,
+# upstream #784) exact-pins mlx-lm==0.31.1, but Gemma 4 needs the gemma4
+# architecture added in mlx-lm 0.31.2. Patch-distance override, verified by
+# the slow test suite and bench (Kokoro synthesis + real generation). Drop
+# together with the mlx-audio pin once a fixed mlx-audio (>0.4.4) releases.
+override-dependencies = ["mlx-lm==0.31.3"]
+
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.8"]
 
