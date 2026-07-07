@@ -12,11 +12,16 @@ said, sends it to a local LLM, and speaks the answer back through your
 speakers as it's generated — the first words of the reply start playing
 before the model has finished thinking of the rest. If the model needs
 current information it can search the web mid-answer (DuckDuckGo, free, no
-keys) — you hear a short pause, then the answer; the app shows what it
-searched. Web-search tool calling only works with a model whose chat
-template supports tool calling (Gemma 4 does today; the shipped Qwen3.6
-default's template does not, so it never receives tools regardless of the
-`[tools]` settings).
+keys); if you ask about something on your screen, it can take a quick,
+silent look and describe what it sees — a screenshot captured only at that
+moment, never a running or background capture. Either way you hear a short
+pause, then the answer; the app shows a live status for whatever it's
+doing. Tool calling only works with a model whose chat template supports
+it (Gemma 4 does today; the shipped Qwen3.6 default's template does not,
+so it never receives tools regardless of the `[tools]` settings); screen
+vision additionally needs an image-capable engine (`llm.engine =
+"mlx_vlm"`) and the Screen Recording permission for whichever process is
+running LocalVoice.
 
 - **Esc** stops the current response immediately (or discards the current
   recording if you're still holding the key).
@@ -231,7 +236,14 @@ grants the CLI does (see [macOS permissions](#macos-permissions) above),
 except the system prompts and the entries you enable in System Settings
 will say **LocalVoice** (the app) instead of your terminal — grant those,
 then relaunch the app the same way you'd relaunch a terminal after granting
-them to it.
+them to it. A third permission, **Screen Recording**, is needed only for
+the screen-vision tool — unlike the two above, it's entirely feature-scoped:
+LocalVoice never checks it at startup and never blocks on it, and the
+screen is captured only the instant the model decides to look, never
+ambiently. The Setup pane's Screen Recording card (next to Microphone and
+Input Monitoring) shows live grant status and links straight to the right
+System Settings pane; without the grant, the model just says it can't see
+your screen instead of the app failing.
 
 **If the app sits at "Connecting…" forever**, the engine process is failing
 to start — almost always a stale Python environment rather than anything in
@@ -267,11 +279,12 @@ client architecture.
 
 **Shipped**: the full push-to-talk engine and CLI (hold, talk, release,
 answer, barge-in, Esc, earcons, configuration, the `setup` command),
-free web-search tool calling (DuckDuckGo, no keys) the model can invoke
-mid-answer, and the native macOS app (live conversation view, generated
-settings editor with restore-defaults, model manager, permission
-onboarding, global hotkey via the app's own event tap) — with tests, docs,
-and CI for both.
+free web-search tool calling (DuckDuckGo, no keys) and screen-vision tool
+calling (a silent, on-demand screenshot a vision-capable engine can look
+at and describe) the model can invoke mid-answer, and the native macOS app
+(live conversation view, generated settings editor with restore-defaults,
+model manager, permission onboarding, global hotkey via the app's own
+event tap) — with tests, docs, and CI for both.
 
 **Next — packaging (phase C)**: a self-contained `LocalVoice.app` that
 bundles the engine (PyInstaller) so no repo checkout or `uv` is needed,
@@ -281,9 +294,9 @@ distributed via GitHub Releases.
 than after you release, for an estimated further ~0.3 s latency win), a
 `parakeet-mlx` STT option, an OpenAI-compatible LLM backend so LM Studio or
 Ollama can serve as the LLM engine, a spoken thinking-mode toggle, session
-transcript export, a menu-bar shell, screen-vision tool calls (phase T3),
-additional TTS backends (Chatterbox-Turbo, Qwen3-TTS), and an experiment in
-skipping STT entirely via a model with native audio input (Gemma 4 E4B).
+transcript export, a menu-bar shell, additional TTS backends
+(Chatterbox-Turbo, Qwen3-TTS), and an experiment in skipping STT entirely
+via a model with native audio input (Gemma 4 E4B).
 
 ## Acknowledgments
 
