@@ -280,8 +280,8 @@ client architecture.
 **Shipped**: the full push-to-talk engine and CLI (hold, talk, release,
 answer, barge-in, Esc, earcons, configuration, the `setup` command),
 free web-search tool calling (DuckDuckGo, no keys) and screen-vision tool
-calling (a silent, on-demand screenshot a vision-capable engine can look
-at and describe) the model can invoke mid-answer, and the native macOS app
+calling (a silent, on-demand screenshot, described in the reply) the model
+can invoke mid-answer, and the native macOS app
 (live conversation view, generated settings editor with restore-defaults,
 model manager, permission onboarding, global hotkey via the app's own
 event tap) — with tests, docs, and CI for both.
