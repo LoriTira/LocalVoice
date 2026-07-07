@@ -253,3 +253,66 @@ def test_gemma_template_renders_tool_round_continuation():
         tok.apply_chat_template(
             sequence(result_content), tools=tools, add_generation_prompt=True, tokenize=False
         )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not GEMMA_LLM.exists(), reason="Gemma vision-capable model not present")
+def test_mlx_vlm_hybrid_text_parity_and_prefix_reuse():
+    """The hybrid engine's whole reason to exist: load Gemma 4 through mlx-vlm
+    (vision-capable) yet drive TEXT turns through mlx_lm.stream_generate against
+    the language tower via _TextTowerAdapter — with prefix reuse across turns and
+    channel->think translation intact. Proves, on the real model:
+
+      1. hybrid generation produces real text (the adapter bridges the tower's
+         LanguageModelOutput to the raw logits the mlx-lm loop consumes),
+      2. the tower's prompt cache actually advances and is reused next turn
+         (cache offset > 0 before turn 2, with a real common prefix to reuse) —
+         the latency win the hybrid is chosen for,
+      3. reasoning streamed as Gemma's <|channel>thought is surfaced as the
+         canonical <think> the downstream TextFilter speaks.
+    """
+    from localvoice.llm.mlx_lm_engine import _apply_template, common_prefix_len
+    from localvoice.llm.mlx_vlm_engine import MlxVlmEngine
+
+    engine = MlxVlmEngine(LlmConfig(model=str(GEMMA_LLM), max_tokens=24))
+    engine.load()
+
+    system = {"role": "system", "content": "Answer in one short sentence."}
+    user1 = {"role": "user", "content": "What color is the sky on a clear day?"}
+
+    # Turn 1: fresh prefill through the hybrid path must yield real text.
+    reply1 = "".join(engine.stream([system, user1], think=False))
+    assert reply1.strip(), "hybrid turn 1 produced no text"
+
+    # The tower's cache now holds turn-1 prompt + generated tokens. Prefix reuse
+    # can only engage if that offset actually advanced — the load-bearing proof
+    # that the adapter drove real generation over a shared cache.
+    assert engine._cache[0].offset > 0
+
+    assistant1 = {"role": "assistant", "content": reply1.strip()}
+    user2 = {"role": "user", "content": "And at night?"}
+    msgs2 = [system, user1, assistant1, user2]
+
+    # Turn 2 shares a real prefix (system + first exchange) with what the cache
+    # already holds, so _stream_text trims (offset - common) and re-prefills only
+    # the diverged tail instead of the whole conversation.
+    turn2_tokens = _apply_template(engine._tokenizer, msgs2, False, None)
+    reused = common_prefix_len(turn2_tokens, engine._prompt_tokens)
+    assert reused > 0, "no reusable prefix — the hybrid would re-prefill every turn"
+    assert engine._cache[0].offset > 0  # prefix-reuse path is armed before the call
+
+    reply2 = "".join(engine.stream(msgs2, think=False))
+    assert reply2.strip(), "hybrid turn 2 produced no text"
+
+    # Think turn: Gemma streams reasoning as <|channel>thought…; the engine's
+    # always-on ChannelThinkTranslator must surface it as a canonical <think>
+    # in the raw stream. Break as soon as the tag appears (it opens near the
+    # start) so we never generate the full think budget.
+    think_sys = {"role": "system", "content": "Reason step by step before answering."}
+    think_user = {"role": "user", "content": "Is 91 a prime number?"}
+    joined = ""
+    for i, delta in enumerate(engine.stream([think_sys, think_user], think=True)):
+        joined += delta
+        if "<think>" in joined or i > 80:
+            break
+    assert "<think>" in joined, f"no translated reasoning in stream: {joined!r}"
