@@ -20,13 +20,17 @@ class FakeLLM:
         self.deltas = deltas
         self.last_messages: list[dict] | None = None
         self.last_think: bool | None = None
+        self.last_tools: list[dict] | None = None
 
     def load(self) -> None:
         pass
 
-    def stream(self, messages: list[dict], *, think: bool) -> Iterator[str]:
+    def stream(
+        self, messages: list[dict], *, think: bool, tools: list[dict] | None = None
+    ) -> Iterator[str]:
         self.last_messages = messages
         self.last_think = think
+        self.last_tools = tools
         yield from self.deltas
 
 
